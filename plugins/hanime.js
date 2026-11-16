@@ -1,5 +1,5 @@
 const { cmd } = require('../command');
-const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('@whiskeysockets/baileys');
+const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('@dnuzi/baileys');
 
 // සැසි දත්ත ගබඩා කිරීම (user අනුව)
 const sessions = {};
