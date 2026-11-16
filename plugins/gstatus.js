@@ -1,5 +1,5 @@
 const { cmd } = require('../command');
-const { downloadMediaMessage, generateWAMessage, generateWAMessageContent, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
+const { downloadMediaMessage, generateWAMessage, generateWAMessageContent, generateWAMessageFromContent } = require('@dnuzi/baileys');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
