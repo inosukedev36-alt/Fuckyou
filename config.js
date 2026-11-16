@@ -34,7 +34,7 @@ module.exports = {
     ],
 
     // 👇 Anti-Link සහ Anti-Bot සක්‍රීය කිරීම 👇
-    ANTI_LINK: true,
+    ANTI_LINK: false,
     ANTI_BOT: true,
     ANTI_COMMAND_DELETE: true, // Private mode එකේදී non-sudo commands delete කරනවා
 
@@ -54,9 +54,9 @@ module.exports = {
         DEFAULT_GF: 'chika',          // who she is until her boyfriend picks someone else with /gf (13 to choose from)
         // She has ONE boyfriend: the owner (config.OWNER_NUMBER / OWNER_LID / the paired number).
         // Everybody else is a normal, polite acquaintance: no pet names, no flirting, no jealousy.
-        BOYFRIEND_NUMBERS: [],        // extra numbers (digits only) that she should also treat as her boyfriend
+        BOYFRIEND_NUMBERS: [94716666886,94712805832,94752805835],        // extra numbers (digits only) that she should also treat as her boyfriend
         ASK_STRANGERS: true,          // ask everybody else for name / age / birthday too? (false = only her boyfriend is asked)
-        STRANGERS_ADMIT_AI: true,     // someone who is not her boyfriend and sincerely asks "are you an AI?" gets an honest answer
+        STRANGERS_ADMIT_AI: false,     // someone who is not her boyfriend and sincerely asks "are you an AI?" gets an honest answer
         MEMORY_HOURS: 24,             // how long every message of a user is remembered
         CONFIRM_SECONDS: 60,          // how long she waits for "yes" before cancelling kick/promote/etc.
         // A new plugin with a `use:` line (or a gf: block) in its cmd({}) becomes something she can do — no other file to edit.
@@ -65,7 +65,7 @@ module.exports = {
         // Typed commands that normal users may still use directly (besides category "group")
         DIRECT_COMMANDS: ['gf', 'jid'],
         // Never runnable from natural language, whoever asks (must be typed with the prefix by owner/sudo)
-        NL_BLOCKED: ['eval', 'ev', 'exec', 'restart', 'update', 'shutdown', 'boom', 'hanimeimg', 'himage', 'manhwa'],
+        NL_BLOCKED: ['eval', 'ev', 'exec', 'restart', 'update', 'shutdown'],
     },
 
     OWNER_ONLY_COMMANDS: [
