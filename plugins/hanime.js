@@ -1,6 +1,5 @@
 const { cmd } = require('../command');
 const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('@dnuzi/baileys');
-const fetch = require('node-fetch'); // Node.js 18+ නම් අවශ්‍ය නැත
 
 // ============================================================
 // Global Variables
@@ -12,9 +11,10 @@ const SEARCH_API = 'https://poddax-api.dev/hanime/search?text=';
 const DOWNLOAD_API = 'https://poddax-api.dev/hanime/download?url=';
 
 // ============================================================
-// Helper: API Request
+// Helper: API Request (Using Native Fetch)
 // ============================================================
 async function fetchAPI(url) {
+  // Node.js 18+ හි built-in fetch භාවිතා කරයි
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
   const data = await res.json();
@@ -76,7 +76,6 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
 async function searchHanime(query) {
   const results = await fetchAPI(SEARCH_API + encodeURIComponent(query));
   if (!Array.isArray(results)) throw new Error('Search results are not an array.');
-  // සැබෑ ප්‍රතිඵලවල title, url, image ඇත
   return results.filter(item => item.title && item.url);
 }
 
@@ -86,7 +85,6 @@ async function searchHanime(query) {
 async function getDownloadLinks(pageUrl) {
   const qualities = await fetchAPI(DOWNLOAD_API + encodeURIComponent(pageUrl));
   if (!Array.isArray(qualities)) throw new Error('Download links are not an array.');
-  // සැබෑ ප්‍රතිඵලවල name, url ඇත
   return qualities.filter(q => q.name && q.url);
 }
 
@@ -185,7 +183,6 @@ cmd({
       return reply('කරුණාකර සොයා ගැනීමට නමක් ලබා දෙන්න.\nඋදා: .hanime haha');
     }
 
-    // පෙර සැසියක් තිබේ නම් එය මකන්න
     if (sessions[from]) delete sessions[from];
 
     sessions[from] = { step: 'search', query };
@@ -235,12 +232,9 @@ cmd({
 // ============================================================
 // Listener එක Module මට්ටමේ attach කරන්න
 // ============================================================
-// මෙය plugin එක load වන විටම එක් වරක් run වේ.
-// globalConn එක command එක run වන විට සකසන බැවින්, පළමු command එකෙන් පසු listener එක attach වේ.
 if (!global._hanimeListenerAttached) {
   global._hanimeListenerAttached = true;
 
-  // Connection එක ලැබෙන තෙක් රැඳී සිටින්න
   const attachListener = () => {
     if (!globalConn) {
       setTimeout(attachListener, 1000);
@@ -256,7 +250,6 @@ if (!global._hanimeListenerAttached) {
         const session = sessions[from];
         if (!session) return;
 
-        // Text හෝ Interactive response එක ලබා ගන්න
         const textMsg = msg.message.conversation 
           || msg.message.extendedTextMessage?.text 
           || '';
