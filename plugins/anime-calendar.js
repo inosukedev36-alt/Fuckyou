@@ -30,9 +30,9 @@ const ANIMESCHEDULE_TOKEN = 'JnjC6I74KflRhsrnsp81WTXlPOHEIA';   // AnimeSchedule
 
 // Message එක channel එකකින් "Forwarded" කරපු වගේ පේන්න (View channel button එකත් එක්ක)
 const FORWARD_LOOK = true;                          // ඕනේ නැත්නම් false කරන්න
-const CHANNEL_INVITE = '0029VbE79hZBadmXSbahq33R';  // https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R
-const CHANNEL_JID = '';                             // JID එක (120363xxxxxxxxxx@newsletter) දන්නවා නම් මෙතන දාන්න. හිස් නම් invite code එකෙන් auto හොයාගන්නවා
-const CHANNEL_NAME = '';                            // හිස් නම් channel එකේ නම auto ගන්නවා
+const CHANNEL_INVITE = '';  // https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R
+const CHANNEL_JID = '120363431069029289@newsletter';                             // JID එක (120363xxxxxxxxxx@newsletter) දන්නවා නම් මෙතන දාන්න. හිස් නම් invite code එකෙන් auto හොයාගන්නවා
+const CHANNEL_NAME = 'just anime stuff';                            // හිස් නම් channel එකේ නම auto ගන්නවා
 
 // ශ්‍රී ලංකා වේලාව = UTC+5:30 (DST නැහැ).
 // Server එකේ timezone එක මොකක් වුණත් වැරදෙන්නේ නැති වෙන්න ගණනය කරන්නේ මෙතනින්ම.
