@@ -52,7 +52,7 @@ cmd(
     pattern: 'devicecheck',
     desc: 'Message එකක device එක මොකක්ද කියලා බලන්න (reply කරලා)',
     category: 'group',
-    use: '.devicecheck',
+    use: '.info',
     filename: __filename,
   },
   async (conn, mek) => {
