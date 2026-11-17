@@ -17,9 +17,9 @@ const crypto = require('crypto')
 /* ═════════════════ Bot messages (මෙතනින් වෙනස් කරගන්න පුළුවන්) ═════════════════ */
 const TXT = {
   spamRemoved: (user, n) =>
-    `🚫 *ANTISPAM*\n@${user} ඔයා අනිත් අයට වදයක් වගේ massage දාන නිසා remove කරනවා`,
+    `🚫 *ANTISPAM*\n@${user} ව එකම message එක ${n} වතාවක් දිගටම එවූ නිසා group එකෙන් remove කළා.`,
   botDeleted: (user) =>
-    `🤖 *ANTIBOT*\n@${user}, botව අයින් කරගන්න.`,
+    `🤖 *ANTIBOT*\n@${user},  bot ලගෙන් මේ group එකට message යවන්න අවසර නැහැ. ඔයාගේ message එක delete කළා.`,
   groupOnly: '⛔ මේ command එක group එකක් ඇතුලේ විතරයි පාවිච්චි කරන්න පුළුවන්.',
   adminOnly: '⛔ මේ command එක group admins ට (හෝ bot owner ට) විතරයි.',
   noMeta: '⚠️ Group info ගන්න බැරි වුණා. පොඩ්ඩකින් ආයෙත් try කරන්න.',
@@ -32,8 +32,8 @@ const OFF_WORDS = new Set(['off', 'disable', 'disabled', 'false', '0', 'no'])
 
 function onText(feature, o) {
   return feature === 'antispam'
-    ? `✅ *Anti-spam ON*\nඑකම message එක ${o.spamLimit} වතාවක් දිගටම එව්වොත් ඒ member ව group එකෙන් remove කරනවා.`
-    : `✅ *Anti-bot ON*\nbot එකකින් එන message delete කරලා දානවා`
+    ? `✅ *Anti-spam ON*\nකෙනෙක් එකම message එක ${o.spamLimit} වතාවක් දිගටම එව්වොත් ඒ member ව group එකෙන් remove කරනවා.`
+    : `✅ *Anti-bot ON*\nbot එකකින් එන message delete කරලා *ANTIBOT* notice එකක් දානවා. (Admins ට අදාළ නැහැ)`
 }
 
 /* ═════════════════ JID helpers ═════════════════ */
@@ -331,10 +331,10 @@ class AntiGuard {
     const device = detectDevice(id)
     const blocked = this.o.blockedDevices.includes(device)
     const text =
-      `📱 *Device check*\n${qid ? 'message' : 'message'} ID: ${id}\n` +
-      `device: *${device}*\n` +
+      `📱 *Device check*\n${qid ? 'Reply කරපු message එකේ' : 'ඔයාගේ message එකේ'} ID: ${id}\n` +
+      `Detected device: *${device}*\n` +
+      `Anti-bot block list: ${this.o.blockedDevices.join(', ')} → ${blocked ? 'BLOCK වෙනවා 🚫' : 'allow ✅'}`
     await this._send(conn, key.remoteJid, { text }, { quoted: msg })
-    `Anti-bot block list: ${this.o.blockedDevices.join(', ')}`
     return { id, device, blocked }
   }
 
