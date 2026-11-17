@@ -74,7 +74,7 @@ module.exports = {
         'kick', 'add', 'promote', 'demote'
     ],
        ANIME_NEWS: {
-    ENABLED: true, INTERVAL_MINUTES: 30, TARGET_JIDS: ['120363427540945497@newsletter'],
+    ENABLED: true, INTERVAL_MINUTES: 5, TARGET_JIDS: ['120363427540945497@newsletter'],
     VIEW_CHANNEL_JID: '120363427540945497@newsletter',   // button එක යන channel එක
     VIEW_CHANNEL_NAME: 'මගෙන් මුකුත් අහගන්න එපා',
      VIEW_CHANNEL_LINK: 'https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R',  // JID නැත්නම් link එකෙන් auto හොයාගන්නවා
