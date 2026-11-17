@@ -5,7 +5,7 @@ const config = require('../config');
 
 const botFooter = config.FOOTER
     ? config.FOOTER.trim()
-    : `> ᴩᴏᴡᴇʀᴇᴅ ʙʏ ﹫ᴋᴄᴇʏ ᴩʀɪᴠᴀᴛᴇ ʙᴏᴛ`;
+    : `> ᴩᴏᴡᴇʀᴇᴅ ʙʏ inosuke`;
 
 const logger = pino({ level: 'silent' });
 const running = new Set();
