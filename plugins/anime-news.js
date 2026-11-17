@@ -81,7 +81,7 @@ const SOCKET_ID         = String(opt('SOCKET_ID', '')).trim();
 const BANNER  = '📰 *ANIME NEWS* 📰';
 const DIVIDER = '━━━━━━━━━━━━━━━━━━━━';
 const BT      = String.fromCharCode(96);
-const FOOTER  = BT + 'ᴍɪᴢᴛʏ ᴀɴɪᴍᴇ©↠ᴵⁿᵒˢᵘᵏᵉ' + BT;
+const FOOTER  = BT + 'ᴵⁿᵒˢᵘᵏᵉ' + BT;
 const NO_COPY = "> *🚫 Don't Copy This Article/Post  🚫*";
 const SUMMARY_LABEL = '💬 *In short*';
 /* ═══════════════════════════════════════════════════════════════════════ */
