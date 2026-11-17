@@ -74,10 +74,10 @@ module.exports = {
         'kick', 'add', 'promote', 'demote'
     ],
        ANIME_NEWS: {
-    ENABLED: true, INTERVAL_MINUTES: 30, TARGET_JIDS: ['120363432680694902@newsletter'],
-    VIEW_CHANNEL_JID: '120363432680694902@newsletter',   // button එක යන channel එක
-    VIEW_CHANNEL_NAME: 'testone',
+    ENABLED: true, INTERVAL_MINUTES: 30, TARGET_JIDS: ['120363427540945497@newsletter'],
+    VIEW_CHANNEL_JID: '120363427540945497@newsletter',   // button එක යන channel එක
+    VIEW_CHANNEL_NAME: 'මගෙන් මුකුත් අහගන්න එපා',
      VIEW_CHANNEL_LINK: 'https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R',  // JID නැත්නම් link එකෙන් auto හොයාගන්නවා
-    // SUMMARY_LANG: 'Sinhala',                                  // summary සිංහලෙන් ඕන නම්
+    SUMMARY_LANG: 'Sinhala',                                  // summary සිංහලෙන් ඕන නම්
        }
     }
