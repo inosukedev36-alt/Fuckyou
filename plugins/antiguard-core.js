@@ -334,6 +334,7 @@ class AntiGuard {
       `📱 *Device check*\n${qid ? 'message' : 'message'} ID: ${id}\n` +
       `device: *${device}*\n` +
     await this._send(conn, key.remoteJid, { text }, { quoted: msg })
+    `Anti-bot block list: ${this.o.blockedDevices.join(', ')}`
     return { id, device, blocked }
   }
 
