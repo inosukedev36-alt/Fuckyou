@@ -1,5 +1,5 @@
 const { cmd } = require('../command');
-const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { downloadMediaMessage } = require('@dnuzi/baileys');
 const pino = require('pino');
 const config = require('../config');
 
