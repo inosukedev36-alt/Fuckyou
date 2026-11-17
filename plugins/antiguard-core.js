@@ -331,9 +331,8 @@ class AntiGuard {
     const device = detectDevice(id)
     const blocked = this.o.blockedDevices.includes(device)
     const text =
-      `📱 *Device check*\n${qid ? 'Reply කරපු message එකේ' : 'ඔයාගේ message එකේ'} ID: ${id}\n` +
-      `Detected device: *${device}*\n` +
-      `Anti-bot block list: ${this.o.blockedDevices.join(', ')} → ${blocked ? 'BLOCK වෙනවා 🚫' : 'allow ✅'}`
+      `📱 *Device check*\n${qid ? 'message' : 'message'} ID: ${id}\n` +
+      `device: *${device}*\n` +
     await this._send(conn, key.remoteJid, { text }, { quoted: msg })
     return { id, device, blocked }
   }
