@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const pino = require('pino');
 const config = require('../config');
 
-const botFooter = config.FOOTER ? config.FOOTER.trim() : `> ᴩᴏᴡᴇʀᴇᴅ ʙʏ ﹫ᴋᴄᴇʏ ᴩʀɪᴠᴀᴛᴇ ʙᴏᴛ`;
+const botFooter = config.FOOTER ? config.FOOTER.trim() : `> ᴩᴏᴡᴇʀᴇᴅ ʙʏ ﹫ᴋᴄᴇʏ 𝙓 ᴵⁿᵒˢᵘᵏᵉ `;
 const logger = pino({ level: 'silent' });
 const running = new Set();
 const MEDIA_TYPES = ['imageMessage', 'videoMessage', 'audioMessage'];
