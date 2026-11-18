@@ -1,10 +1,37 @@
 // plugins/jid.js
 const { cmd } = require('../command')
 
-// ⚠️ sendNative සහ copy ඔබේ bot එකේ globally තියෙන නිසා මෙතන require කරන්නේ නෑ.
+// 🚨 ඔබේ sendNative සහ copy තියෙන file එකේ path එක මෙතනට දාන්න.
+// උදාහරණයක් විදිහට: require('../lib/button') හෝ require('../lib/msg')
+let sendNative, copy;
+try {
+    const btnLib = require('../lib/button'); // <--- ඔබේ path එක වැරදි නම් මෙතන වෙනස් කරන්න
+    sendNative = btnLib.sendNative;
+    copy = btnLib.copy;
+} catch (e) {
+    // Path එක වැරදි නම් හෝ එහෙම file එකක් නැත්නම් bot එක crash නොවී මේක පාවිච්චි කරයි
+    console.log("⚠️ Button library not found at path, using fallback...");
+    
+    // Fallback copy function
+    copy = (text, value) => ({
+        name: "cta_copy",
+        buttonParamsJson: JSON.stringify({ display_text: text, copy_code: value })
+    });
+
+    // Fallback sendNative function
+    sendNative = async (conn, from, mek, options) => {
+        return conn.sendMessage(from, {
+            interactiveMessage: {
+                header: { title: options.text, hasMediaAttachment: false },
+                body: { text: "Tap to copy 👇" },
+                footer: { text: "Powered by Bot" },
+                nativeFlowMessage: { buttons: options.buttons }
+            }
+        }, { quoted: mek });
+    };
+}
 
 const ALL_ADMINS_ONLY = false
-
 const isPN  = (jid) => !!jid && jid.endsWith('@s.whatsapp.net')
 const isLID = (jid) => !!jid && jid.endsWith('@lid')
 const memberJid = (p) => p.phoneNumber || p.jid || p.id
