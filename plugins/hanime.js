@@ -7,17 +7,29 @@ const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('
 let globalConn = null;
 const sessions = {};
 
-// AI assistant එකට access කරන්න global set expose කරයි
-// ඔබේ AI handler එකේ මුලට මේක දාන්න:
-//   if (global._hanimeSessions && global._hanimeSessions[from]) return;
 global._hanimeSessions = sessions;
 
 const SEARCH_API = 'https://poddax-api.dev/hanime/search?text=';
 const DOWNLOAD_API = 'https://poddax-api.dev/hanime/download?url=';
 
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
-const LOADING_INTERVAL_MS = 1500;
-const TOTAL_BLOCKS = 10;   // 10% = 1 block, 100% = 10 blocks
+
+// ============================================================
+// Antiban Helper Functions (Delay & Typing Presence)
+// ============================================================
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const randomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
+
+// මිනිහෙක් type කරනවා වගේ පෙන්නන්න function එකක්
+async function simulateTyping(conn, from, durationMs) {
+  try {
+    await conn.sendPresenceUpdate('composing', from);
+    await sleep(durationMs);
+    await conn.sendPresenceUpdate('paused', from);
+  } catch (e) {
+    // Presence update fail උනත් process එක නවත්තන්නේ නෑ
+  }
+}
 
 // ============================================================
 // Helper: API Request
@@ -46,65 +58,63 @@ function resetSessionTimeout(from) {
 }
 
 // ============================================================
-// Helper: Loading bar (• only, 10% = 1 block, space for empty)
+// Helper: Messages auto-delete කිරීම
 // ============================================================
-function renderBar(percent) {
-  const filled = Math.min(TOTAL_BLOCKS, Math.floor(percent / 10));
-  return '•'.repeat(filled) + '\u00A0'.repeat(TOTAL_BLOCKS - filled);
+async function cleanupSession(conn, from, session) {
+  if (!session || !session.messageKeys || session.messageKeys.length === 0) return;
+  
+  // File එක process වෙන්න ටිකක් වෙලා ගන්න නිසා පොඩි delay එකක්
+  await sleep(3000);
+
+  for (const key of session.messageKeys) {
+    try {
+      await conn.sendMessage(from, { delete: key });
+      await sleep(randomDelay(400, 800)); // Delete කරද්දිත් spam වෙන්නේ නැති වෙන්න delay
+    } catch (e) {}
+  }
 }
 
-function buildLoadingText(title, subtitle, totalTargets, percent) {
-  const targetLine = totalTargets > 1 ? `\n📤 Sending to ${totalTargets} chats` : '';
-  return `📥 Downloading: ${title}\n📦 ${subtitle}${targetLine}\n\n${renderBar(percent)} ${percent}%\n⏳ Please wait...`;
-}
-
-async function startLoadingBar(conn, from, quotedMsg, title, subtitle, totalTargets) {
+// ============================================================
+// Helper: Loading Animation (No percentage)
+// ============================================================
+async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
   let loadingKey = null;
-  let percent = 0;
+  let dots = 0;
 
   try {
-    const sent = await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, 0) }, { quoted: quotedMsg });
+    const sent = await conn.sendMessage(from, { text: `📥 Downloading: ${title}\n📦 ${subtitle}\n⏳ Please wait...` }, { quoted: quotedMsg });
     loadingKey = sent?.key || null;
+    if (loadingKey) session.messageKeys.push(loadingKey);
   } catch (e) {
     console.error('[HANIME] Failed to send loading message:', e.message);
   }
 
   const interval = setInterval(async () => {
-    if (percent >= 95) return;
-    percent = Math.min(95, percent + Math.floor(Math.random() * 3) + 3);
+    dots = (dots + 1) % 4;
+    const dotStr = '.'.repeat(dots);
     try {
       if (loadingKey) {
-        await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, percent), edit: loadingKey });
+        await conn.sendMessage(from, { text: `📥 Downloading: ${title}\n📦 ${subtitle}\n⏳ Please wait${dotStr}`, edit: loadingKey });
       }
     } catch (_) {}
-  }, LOADING_INTERVAL_MS);
+  }, 2000);
 
   return {
     loadingKey,
     stop: () => clearInterval(interval),
     finish: async (finalText) => {
       clearInterval(interval);
-      let p = percent;
-      while (p < 100) {
-        p = Math.min(100, p + 10);
-        try {
-          await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, p), edit: loadingKey });
-          await new Promise(r => setTimeout(r, 120));
-        } catch (_) {}
-      }
-      await new Promise(r => setTimeout(r, 500));
       try {
-        await conn.sendMessage(from, { text: finalText, edit: loadingKey });
-        setTimeout(async () => {
-          try { await conn.sendMessage(from, { delete: loadingKey }); } catch (_) {}
-        }, 4000);
+        if (loadingKey) {
+          await conn.sendMessage(from, { text: finalText, edit: loadingKey });
+        }
       } catch (_) {}
     }
   };
 }
 
 // ============================================================
-// Helper: Filename builder — TitleName[Tag].mp4 (no parentheses)
+// Helper: Filename Builder
 // ============================================================
 function buildFileName(title, customTag) {
   const cleanTitle = title.replace(/[^\w]/g, '').substring(0, 50) || 'Video';
@@ -113,21 +123,15 @@ function buildFileName(title, customTag) {
 }
 
 // ============================================================
-// Helper: Interactive list
+// Helper: Interactive List
 // ============================================================
-async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, footerText, sections, imageUrl = null) {
+async function sendInteractiveList(conn, from, mek, session, headerTitle, bodyText, footerText, sections, imageUrl = null) {
   try {
     let media = {};
     if (imageUrl) {
       try {
-        media = await prepareWAMessageMedia(
-          { image: { url: imageUrl } },
-          { upload: conn.waUploadToServer }
-        );
-      } catch (imgErr) {
-        console.error('[HANIME] Media prepare failed:', imgErr.message);
-        media = {};
-      }
+        media = await prepareWAMessageMedia({ image: { url: imageUrl } }, { upload: conn.waUploadToServer });
+      } catch (imgErr) { media = {}; }
     }
 
     const listParams = { title: headerTitle, sections };
@@ -135,34 +139,28 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
     const msg = generateWAMessageFromContent(from, {
       interactiveMessage: proto.Message.InteractiveMessage.fromObject({
         header: proto.Message.InteractiveMessage.Header.fromObject({
-          title: headerTitle,
-          hasMediaAttachment: !!imageUrl && Object.keys(media).length > 0,
-          ...media
+          title: headerTitle, hasMediaAttachment: !!imageUrl && Object.keys(media).length > 0, ...media
         }),
         body: { text: bodyText },
         footer: { text: footerText },
-        nativeFlowMessage: {
-          buttons: [{
-            name: 'single_select',
-            buttonParamsJson: JSON.stringify(listParams)
-          }]
-        }
+        nativeFlowMessage: { buttons: [{ name: 'single_select', buttonParamsJson: JSON.stringify(listParams) }] }
       })
     }, { quoted: mek });
 
     await conn.relayMessage(from, msg.message, { messageId: msg.key.id });
+    session.messageKeys.push(msg.key);
     return true;
   } catch (e) {
-    console.error('[HANIME] Interactive send error:', e);
-    await conn.sendMessage(from, { text: bodyText + '\n\n' + footerText }, { quoted: mek });
+    const sent = await conn.sendMessage(from, { text: bodyText + '\n\n' + footerText }, { quoted: mek });
+    session.messageKeys.push(sent.key);
     return false;
   }
 }
 
 // ============================================================
-// Helper: Quick reply buttons
+// Helper: Quick Reply Buttons
 // ============================================================
-async function sendQuickButtons(conn, from, mek, bodyText, footerText, buttons) {
+async function sendQuickButtons(conn, from, mek, session, bodyText, footerText, buttons) {
   try {
     const msg = generateWAMessageFromContent(from, {
       interactiveMessage: proto.Message.InteractiveMessage.fromObject({
@@ -178,19 +176,20 @@ async function sendQuickButtons(conn, from, mek, bodyText, footerText, buttons) 
     }, { quoted: mek });
 
     await conn.relayMessage(from, msg.message, { messageId: msg.key.id });
+    session.messageKeys.push(msg.key);
     return true;
   } catch (e) {
-    console.error('[HANIME] Button send error:', e);
     let fallback = bodyText + '\n\n';
     buttons.forEach((b, i) => { fallback += `${i + 1} | ${b.text}\n`; });
     fallback += '\n' + footerText;
-    await conn.sendMessage(from, { text: fallback }, { quoted: mek });
+    const sent = await conn.sendMessage(from, { text: fallback }, { quoted: mek });
+    session.messageKeys.push(sent.key);
     return false;
   }
 }
 
 // ============================================================
-// Helper: API search / download
+// Helper: API calls
 // ============================================================
 async function searchHanime(query) {
   const results = await fetchAPI(SEARCH_API + encodeURIComponent(query));
@@ -205,7 +204,7 @@ async function getDownloadLinks(pageUrl) {
 }
 
 // ============================================================
-// Helper: Send video to all targets (loading bar සමඟ)
+// Helper: Send Video & Cleanup
 // ============================================================
 async function sendVideoToTargets(conn, from, session, quotedMsg) {
   const { selectedEpisode, selectedQuality, targetJids, customTag } = session;
@@ -214,18 +213,21 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
   const fileName = buildFileName(selectedEpisode.title, customTag);
   const caption = `🎬 ${selectedEpisode.title}\n📥 Quality: ${selectedQuality.name}`;
 
-  const loading = await startLoadingBar(
-    conn, from, quotedMsg,
-    selectedEpisode.title,
-    `Quality: ${selectedQuality.name}`,
-    total
-  );
+  // Anti-ban: File එක යවන්න කලින් typing එකක් පෙන්නනවා
+  await simulateTyping(conn, from, randomDelay(2000, 4000));
+
+  const loading = await startLoading(conn, from, quotedMsg, selectedEpisode.title, `Quality: ${selectedQuality.name}`, session);
 
   let success = 0, failed = 0;
   const failedJids = [];
 
   for (const jid of targetJids) {
     try {
+      // Anti-ban: Group 2කට වඩා තිබ්බොත් file යවන්න කලින් විනාඩියක් විතර delay කරනවා (Spam block වෙන්නේ නැති වෙන්න)
+      if (success > 0 || failed > 0) {
+        await simulateTyping(conn, from, randomDelay(5000, 10000));
+      }
+
       await conn.sendMessage(jid, {
         document: { url: selectedQuality.url },
         mimetype: 'video/mp4',
@@ -233,26 +235,32 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
         caption: caption
       });
       success++;
+
+      // File එක යවලා ඊළඟ එකට කලින් පොඩි නිහඬතාවයක්
+      await sleep(randomDelay(2000, 4000));
+
     } catch (e) {
       failed++;
       failedJids.push(jid);
-      console.error(`[HANIME] Failed to send to ${jid}:`, e.message);
+      await sleep(randomDelay(1000, 2000));
     }
   }
 
   let finalText;
   if (failed === 0) {
-    finalText = `✅ Downloaded & sent to ${success} chat(s)!\n📁 File: ${fileName}`;
+    finalText = `✅ 100% Downloaded & Uploaded!\n📁 File: ${fileName}`;
   } else {
     finalText = `⚠️ Sent to ${success}, failed ${failed}.\n📁 File: ${fileName}\n❌ Failed: ${failedJids.join(', ')}`;
   }
 
   await loading.finish(finalText);
+  
+  await cleanupSession(conn, from, session);
   delete sessions[from];
 }
 
 // ============================================================
-// Helper: Episode → quality list
+// Helper: Episode → Quality
 // ============================================================
 async function handleEpisodeSelection(conn, from, session, selectedItem, quotedMsg) {
   try {
@@ -260,15 +268,19 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
     session.selectedEpisode = selectedItem;
     resetSessionTimeout(from);
 
+    // Anti-ban: API එකට යන්න කලින් typing පෙන්නනවා
+    await simulateTyping(conn, from, randomDelay(1500, 3000));
+
     const qualities = await getDownloadLinks(selectedItem.url);
     if (qualities.length === 0) {
-      await conn.sendMessage(from, { text: '❌ No download links found for this video.' }, { quoted: quotedMsg });
+      const sent = await conn.sendMessage(from, { text: '❌ No download links found.' }, { quoted: quotedMsg });
+      session.messageKeys.push(sent.key);
+      await cleanupSession(conn, from, session);
       delete sessions[from];
       return;
     }
 
     session.qualities = qualities;
-
     let body = `🎬 ${selectedItem.title}\n\n📥 Available Qualities\n\n`;
     qualities.forEach((q, i) => { body += `${i + 1} | ${q.name}\n`; });
     body += `0 | ❌ Close\n\nSend the quality number.`;
@@ -279,21 +291,20 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
     }];
     sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
 
-    await sendInteractiveList(conn, from, quotedMsg, 'Select Quality', body, 'Send a number or select from the list', sections, selectedItem.image || null);
+    await sendInteractiveList(conn, from, quotedMsg, session, 'Select Quality', body, 'Send a number or select from the list', sections, selectedItem.image || null);
   } catch (e) {
-    console.error('[HANIME] Episode selection error:', e);
-    await conn.sendMessage(from, { text: '⚠️ Error: ' + e.message }, { quoted: quotedMsg });
     delete sessions[from];
   }
 }
 
 // ============================================================
-// Helper: Quality → destination buttons (Inbox / Groups / Cancel)
+// Helper: Quality → Destination Buttons
 // ============================================================
 async function handleQualitySelection(conn, from, session, qualityIndex, quotedMsg) {
   const quality = session.qualities[qualityIndex];
   if (!quality) {
-    await conn.sendMessage(from, { text: '❌ Invalid selection.' }, { quoted: quotedMsg });
+    const sent = await conn.sendMessage(from, { text: '❌ Invalid selection.' }, { quoted: quotedMsg });
+    session.messageKeys.push(sent.key);
     return;
   }
 
@@ -301,10 +312,13 @@ async function handleQualitySelection(conn, from, session, qualityIndex, quotedM
   session.step = 'select_destination';
   resetSessionTimeout(from);
 
+  // Anti-ban: පොඩි delay එකක් දාලා ඊට පස්සේ buttons යවනවා
+  await simulateTyping(conn, from, randomDelay(1500, 2500));
+
   const bodyText = `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}\n\n📤 Where should I send the file?`;
 
   await sendQuickButtons(
-    conn, from, quotedMsg,
+    conn, from, quotedMsg, session,
     bodyText,
     'Choose a destination',
     [
@@ -316,7 +330,7 @@ async function handleQualitySelection(conn, from, session, qualityIndex, quotedM
 }
 
 // ============================================================
-// Command
+// Main Command
 // ============================================================
 cmd({
   pattern: 'hanime',
@@ -328,17 +342,18 @@ cmd({
 
   try {
     const query = q || text;
-    if (!query) {
-      return reply('Please provide a name to search.\nExample: .hanime haha');
-    }
+    if (!query) return reply('Please provide a name.\nExample: .hanime haha');
 
     if (sessions[from]) {
       if (sessions[from].timeout) clearTimeout(sessions[from].timeout);
       delete sessions[from];
     }
 
-    sessions[from] = { step: 'search', query };
+    sessions[from] = { step: 'search', query, messageKeys: [mek.key] };
     resetSessionTimeout(from);
+
+    // Anti-ban: Search කරන ගමන් මිනිහෙක් type කරනවා වගේ පෙන්නනවා
+    await simulateTyping(conn, from, randomDelay(2000, 4000));
 
     const results = await searchHanime(query);
     if (results.length === 0) {
@@ -350,6 +365,9 @@ cmd({
     sessions[from].step = 'select_episode';
     resetSessionTimeout(from);
 
+    // Anti-ban: Result එක එවන්න කලින් තව ටිකක් delay කරනවා
+    await simulateTyping(conn, from, randomDelay(1500, 3000));
+
     let body = `🔍 Search: ${query}\n\n`;
     results.forEach((item, i) => { body += `${i + 1} | ${item.title}\n`; });
     body += `0 | ❌ Close\n\nSend the video number.`;
@@ -360,16 +378,10 @@ cmd({
     }];
     sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
 
-    const imageUrl = results[0]?.image || null;
-
-    await sendInteractiveList(conn, from, mek, 'Search Results', body, 'Send a number or select from the list', sections, imageUrl);
+    await sendInteractiveList(conn, from, mek, sessions[from], 'Search Results', body, 'Send a number or select from the list', sections, results[0]?.image || null);
   } catch (e) {
-    console.error('[HANIME] Command error:', e);
     reply('⚠️ Error: ' + e.message);
-    if (sessions[from]) {
-      if (sessions[from].timeout) clearTimeout(sessions[from].timeout);
-      delete sessions[from];
-    }
+    if (sessions[from]) delete sessions[from];
   }
 });
 
@@ -394,61 +406,48 @@ if (!global._hanimeListenerAttached) {
         const session = sessions[from];
         if (!session) return;
 
-        // Wrap ඉවත් කරයි
+        session.messageKeys.push(msg.key);
+
         const inner =
-          msg.message?.viewOnceMessage?.message ||
-          msg.message?.viewOnceMessageV2?.message ||
-          msg.message?.viewOnceMessageV2Extension?.message ||
-          msg.message?.ephemeralMessage?.message ||
-          msg.message;
+          msg.message?.viewOnceMessage?.message || msg.message?.viewOnceMessageV2?.message ||
+          msg.message?.ephemeralMessage?.message || msg.message;
 
-        const textMsg =
-          inner.conversation ||
-          inner.extendedTextMessage?.text ||
-          inner.imageMessage?.caption ||
-          '';
+        const textMsg = inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || '';
 
-        // Interactive / button response parse කිරීම
         let listId = null;
-        listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId || null;
-        if (!listId) listId = inner.buttonsResponseMessage?.selectedButtonId || null;
+        listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
+                 inner.templateButtonReplyMessage?.selectedId ||
+                 inner.buttonsResponseMessage?.selectedButtonId || null;
+                 
         if (!listId) {
-          const paramsJson =
-            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
-            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
+          const paramsJson = inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson || inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
           if (paramsJson) {
             try {
               const p = typeof paramsJson === 'string' ? JSON.parse(paramsJson) : paramsJson;
               listId = p.id || p.selectedId || p.selected_id || null;
-            } catch (e) {
-              console.error('[HANIME] paramsJson parse error:', e, paramsJson);
-            }
+            } catch (e) {}
           }
         }
 
-        // Close / cancel
-        if (listId === 'close') {
+        if (listId === 'close' || textMsg.toLowerCase() === 'cancel' || textMsg === '0') {
           if (session.timeout) clearTimeout(session.timeout);
+          const sent = await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
+          session.messageKeys.push(sent.key);
+          await cleanupSession(globalConn, from, session);
           delete sessions[from];
-          await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
           return;
         }
 
         // ============================================================
-        // Step: select_destination — buttons හෝ text number
+        // Step: select_destination (Button click / Text match)
         // ============================================================
         if (session.step === 'select_destination') {
           let choice = null;
-          if (listId === 'dest_inbox') choice = 1;
-          else if (listId === 'dest_group') choice = 2;
+          
+          if (listId === 'dest_inbox' || textMsg.toLowerCase().includes('inbox')) choice = 1;
+          else if (listId === 'dest_group' || textMsg.toLowerCase().includes('group')) choice = 2;
           else {
             const num = parseInt(textMsg.trim());
-            if (num === 0) {
-              if (session.timeout) clearTimeout(session.timeout);
-              delete sessions[from];
-              await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-              return;
-            }
             if (num === 1) choice = 1;
             else if (num === 2) choice = 2;
           }
@@ -458,22 +457,25 @@ if (!global._hanimeListenerAttached) {
             session.targetJids = [senderJid];
             session.step = 'enter_tag';
             resetSessionTimeout(from);
-            await globalConn.sendMessage(from, {
-              text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
-            }, { quoted: msg });
+            
+            // Anti-ban: මිනිහෙක් reply කරනකන් ඉන්නවා වගේ පොඩි delay එකක්
+            await simulateTyping(globalConn, from, randomDelay(1000, 2000));
+            const sent = await globalConn.sendMessage(from, { text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL` }, { quoted: msg });
+            session.messageKeys.push(sent.key);
             return;
           }
 
           if (choice === 2) {
             session.step = 'enter_jids';
             resetSessionTimeout(from);
-            await globalConn.sendMessage(from, {
-              text: `📤 Send group JID(s). You can send multiple, separated by comma or newline.\n\nExample:\n1203631@g.us, 1203632@g.us\n\nOr type "inbox" to include your DM.`
-            }, { quoted: msg });
+            await simulateTyping(globalConn, from, randomDelay(1000, 2000));
+            const sent = await globalConn.sendMessage(from, { text: `📤 Send group JID(s). You can send multiple, separated by comma or newline.\n\nExample:\n1203631@g.us, 1203632@g.us\n\nOr type "inbox" to include your DM.` }, { quoted: msg });
+            session.messageKeys.push(sent.key);
             return;
           }
 
-          await globalConn.sendMessage(from, { text: '❌ Please choose using the buttons (or reply 1 / 2 / 0).' }, { quoted: msg });
+          const errMsg = await globalConn.sendMessage(from, { text: '❌ Please choose using the buttons (or reply 1 / 2 / 0).' }, { quoted: msg });
+          session.messageKeys.push(errMsg.key);
           return;
         }
 
@@ -485,10 +487,7 @@ if (!global._hanimeListenerAttached) {
           if (!raw) return;
 
           const senderJid = msg.key.participant || msg.key.remoteJid;
-          const jids = raw.split(/[\n,;]+/)
-            .map(s => s.trim())
-            .filter(Boolean)
-            .map(j => {
+          const jids = raw.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).map(j => {
               const lower = j.toLowerCase();
               if (lower === 'inbox' || lower === 'me') return senderJid;
               if (j.includes('@')) return j;
@@ -496,34 +495,24 @@ if (!global._hanimeListenerAttached) {
               return j;
             });
 
-          if (jids.length === 0) {
-            await globalConn.sendMessage(from, { text: '❌ No valid JIDs provided.' }, { quoted: msg });
-            return;
-          }
+          if (jids.length === 0) return;
 
           session.targetJids = jids;
           session.step = 'enter_tag';
           resetSessionTimeout(from);
 
+          await simulateTyping(globalConn, from, randomDelay(1500, 3000));
           const jidList = jids.map((j, i) => `${i + 1}. ${j}`).join('\n');
-          await globalConn.sendMessage(from, {
-            text: `✅ ${jids.length} target(s) set:\n${jidList}\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
-          }, { quoted: msg });
+          const sent = await globalConn.sendMessage(from, { text: `✅ ${jids.length} target(s) set:\n${jidList}\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL` }, { quoted: msg });
+          session.messageKeys.push(sent.key);
           return;
         }
 
         // ============================================================
-        // Step: enter_tag — custom tag → send video
+        // Step: enter_tag → Send Video
         // ============================================================
         if (session.step === 'enter_tag') {
           const raw = textMsg.trim();
-
-          if (raw.toLowerCase() === 'cancel') {
-            delete sessions[from];
-            await globalConn.sendMessage(from, { text: '❌ Cancelled.' }, { quoted: msg });
-            return;
-          }
-
           session.customTag = raw || 'HANIME';
           resetSessionTimeout(from);
 
@@ -535,8 +524,7 @@ if (!global._hanimeListenerAttached) {
         // Step: select_episode / select_quality
         // ============================================================
         let selection = null;
-
-        if (listId) {
+        if (listId && listId !== 'close') {
           const parts = listId.split('_');
           const type = parts[0];
           const index = parseInt(parts[1]);
@@ -548,12 +536,6 @@ if (!global._hanimeListenerAttached) {
           const match = textMsg.trim().match(/^(\d+)/);
           if (match) {
             const num = parseInt(match[1]);
-            if (num === 0) {
-              if (session.timeout) clearTimeout(session.timeout);
-              delete sessions[from];
-              await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-              return;
-            }
             if (session.step === 'select_episode' && num >= 1) selection = { type: 'episode', index: num - 1 };
             else if (session.step === 'select_quality' && num >= 1) selection = { type: 'quality', index: num - 1 };
           }
@@ -563,10 +545,7 @@ if (!global._hanimeListenerAttached) {
 
         if (selection.type === 'episode' && session.step === 'select_episode') {
           const item = session.results[selection.index];
-          if (!item) {
-            await globalConn.sendMessage(from, { text: '❌ Invalid number.' }, { quoted: msg });
-            return;
-          }
+          if (!item) return;
           session.selectedIndex = selection.index;
           await handleEpisodeSelection(globalConn, from, session, item, msg);
         } else if (selection.type === 'quality' && session.step === 'select_quality') {
@@ -577,7 +556,7 @@ if (!global._hanimeListenerAttached) {
       }
     });
 
-    console.log('[HANIME] Listener attached successfully.');
+    console.log('[HANIME] Anti-ban Listener attached successfully.');
   };
 
   attachListener();
