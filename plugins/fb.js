@@ -2,6 +2,19 @@
 //
 // Uses poddax-api.dev endpoint. No API key needed.
 // Supports: facebook.com/watch, /reel, /videos, /share/v, fb.watch short links.
+//
+// API response shape:
+// {
+//   "status": true,
+//   "data": {
+//     "owner": "@KingPoddaModz",
+//     "title": "Facebook Video",
+//     "duration": "0:23",
+//     "thumbnail": "https://...jpg",
+//     "hdvideo": "https://...",
+//     "novideo": "https://..."
+//   }
+// }
 const { cmd } = require('../command');
 
 const API_URL = 'https://poddax-api.dev/fb';
@@ -69,7 +82,7 @@ async (conn, mek, m, { from, q, prefix }) => {
         // Send thumbnail with buttons (no caption text)
         const sent = await conn.sendMessage(from, {
             image: thumbnail ? { url: thumbnail } : undefined,
-            caption: '',          // no caption
+            caption: '',
             footer: 'Facebook Downloader',
             buttons,
             headerType: 4,
@@ -86,7 +99,6 @@ async (conn, mek, m, { from, q, prefix }) => {
 
                 await conn.sendMessage(from, {
                     video: { url: chosenUrl },
-                    // no caption
                 }, { quoted: mek });
             } catch (e) {
                 console.error('[fb] button handler error:', e.message);
