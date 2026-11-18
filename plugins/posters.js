@@ -95,7 +95,7 @@ async function downloadAndSendPosters(conn, from, session, quotedMsg) {
     const count = posterCount;
     posterCount = 0;
     
-    // මෙතන තමයි caption එක එන්නේ
+    // Caption එක මෙතන තියෙනවා
     await conn.sendMessage(from, {
       document: zipBuffer,
       mimetype: 'application/zip',
@@ -154,6 +154,7 @@ async (conn, mek, m, { from, reply, q }) => {
 
         await simulateTyping(conn, from, randomDelay(1500, 2500));
 
+        // include_adult=true දාලා තියෙන නිසා 18+ ඒවත් එනවා
         const searchUrl = `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(movieName)}&include_adult=true`;
         const searchRes = await axios.get(searchUrl);
 
@@ -162,7 +163,7 @@ async (conn, mek, m, { from, reply, q }) => {
             return reply('❌ Nothing found with that name.');
         }
 
-        // Movie සහ TV විතරක් අරගන්නවා
+        // Movie සහ TV විතරක් අරගන්නවා (Max 10 පෙන්නනවා)
         const results = searchRes.data.results.filter(r => r.media_type === 'movie' || r.media_type === 'tv').slice(0, 10);
 
         if (results.length === 0) {
@@ -302,6 +303,8 @@ if (!global._posterListenerAttached) {
             // Posters ගන්නවා
             const imagesUrl = `https://api.themoviedb.org/3/${mediaType}/${mediaId}/images?api_key=${TMDB_API_KEY}`;
             const imagesRes = await axios.get(imagesUrl);
+            
+            // Adult ඒවා එන්නේ නැති නිසා, ඒවත් එන විදිහට filter කරන්නේ නෑ, එන හැම poster එකක්ම ගන්නවා
             const posters = imagesRes.data.posters;
 
             if (!posters || posters.length === 0) {
