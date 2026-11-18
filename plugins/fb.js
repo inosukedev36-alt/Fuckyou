@@ -1,4 +1,4 @@
-// Facebook downloader — /fb <facebook video link> (or reply to a message that contains a link)
+// Facebook downloader — /fb <facebook link> (or reply to a message that contains a link)
 //
 // Uses poddax-api.dev endpoint. No API key needed.
 // Supports: facebook.com/watch, /reel, /videos, /share/v, fb.watch short links.
@@ -18,7 +18,6 @@
 const { cmd } = require('../command');
 
 const API_URL = 'https://poddax-api.dev/fb';
-// Match any facebook video-ish URL (incl. fb.watch shortlinks and /share/)
 const FB_REGEX = /https?:\/\/(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch)\/[^\s]+/i;
 
 cmd({
@@ -44,12 +43,12 @@ async (conn, mek, m, { from, q, prefix }) => {
         if (!res.ok) throw new Error(`API responded with HTTP ${res.status}`);
         const data = await res.json();
 
-        // API shape: { status: true, data: { owner, title, duration, thumbnail, hdvideo, novideo } }
-        const d = data.data;
-        if (!data.status || !d) {
+        // API shape: { status, data: { thumbnail, hdvideo, novideo } }
+        if (!data.status || !data.data) {
             return await say('❌ Video not found. The post may be private or the link may be invalid.');
         }
 
+        const d = data.data;
         const thumbnail = d.thumbnail;
         const hd = d.hdvideo;
         const sd = d.novideo;
@@ -63,23 +62,15 @@ async (conn, mek, m, { from, q, prefix }) => {
         const qualityMap = {};
 
         if (hd) {
-            buttons.push({
-                buttonId: 'fb_hd',
-                buttonText: { displayText: '⬇️ HD Quality' },
-                type: 1,
-            });
+            buttons.push({ buttonId: 'fb_hd', buttonText: { displayText: '⬇️ HD Quality' }, type: 1 });
             qualityMap['fb_hd'] = hd;
         }
         if (sd) {
-            buttons.push({
-                buttonId: 'fb_sd',
-                buttonText: { displayText: '⬇️ SD Quality' },
-                type: 1,
-            });
+            buttons.push({ buttonId: 'fb_sd', buttonText: { displayText: '⬇️ SD Quality' }, type: 1 });
             qualityMap['fb_sd'] = sd;
         }
 
-        // Send thumbnail with buttons (no caption text)
+        // Send thumbnail with buttons (no caption)
         const sent = await conn.sendMessage(from, {
             image: thumbnail ? { url: thumbnail } : undefined,
             caption: '',
@@ -88,13 +79,12 @@ async (conn, mek, m, { from, q, prefix }) => {
             headerType: 4,
         }, { quoted: mek });
 
-        // Handle button replies
+        // Handle button reply
         const handler = async (event) => {
             try {
                 const btn = event?.messages?.[0]?.message?.buttonsResponseMessage;
                 if (!btn) return;
-                const id = btn.selectedButtonId;
-                const chosenUrl = qualityMap[id];
+                const chosenUrl = qualityMap[btn.selectedButtonId];
                 if (!chosenUrl) return;
 
                 await conn.sendMessage(from, {
