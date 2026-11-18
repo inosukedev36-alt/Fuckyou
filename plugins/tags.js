@@ -24,25 +24,124 @@ if (fs.existsSync(SHH_FILE)) {
 // (tagall lives in extras.js: admin-only and chunked. The old copy here had no admin check.)
 
 // ─── HIDE TAG ───
+//  .hidetag                        -> blank message that tags everyone
+//  .hidetag hello                  -> "hello", tags everyone
+//  .hidetag  (reply to a message)  -> copy of that message, tags everyone
+//  .hidetag <group jid>,<message>  -> same, but sent to that group (owner only, works from any chat)
+//  .hidetag <group jid>            -> blank message to that group
+// Always sent as a NEW message (never as a reply to the command).
+
+const BLANK = '\u200E'; // invisible character -> "blank" message
+const WRAPPERS = ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension', 'documentWithCaptionMessage'];
+const VIEW_ONCE = ['viewOnceMessage', 'viewOnceMessageV2', 'viewOnceMessageV2Extension'];
+const COPYABLE = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage', 'contactMessage', 'contactsArrayMessage', 'locationMessage'];
+
+// strip wrapper layers (ephemeral / view once / document caption) -> the real content
+function unwrap(msg) {
+    let cur = msg;
+    for (let i = 0; i < 5 && cur; i++) {
+        const w = WRAPPERS.find(k => cur[k] && cur[k].message);
+        if (!w) break;
+        cur = cur[w].message;
+    }
+    return cur;
+}
+
+function isViewOnce(raw) {
+    if (!raw) return false;
+    if (VIEW_ONCE.some(k => raw[k])) return true;
+    return Object.values(unwrap(raw) || {}).some(v => v && v.viewOnce === true);
+}
+
+// contextInfo (with quotedMessage) of the command message, when it was sent as a reply
+function getReplyContext(mek, m) {
+    const msg = unwrap(mek && mek.message) || {};
+    const ctx = Object.values(msg).map(v => v && v.contextInfo).find(c => c && c.quotedMessage);
+    if (ctx) return ctx;
+
+    const viaFw = m && m.msg && m.msg.contextInfo;
+    if (viaFw && viaFw.quotedMessage) return viaFw;
+
+    const fake = m && m.quoted && m.quoted.fakeObj;
+    if (fake && fake.message) return { quotedMessage: fake.message, stanzaId: fake.key && fake.key.id };
+    return null;
+}
+
+// "120363xxxxxxxxxx@g.us,hello"  ->  { jid, text: 'hello' }   (null if it doesn't start with a group jid)
+function parseGroupTarget(q) {
+    const hit = String(q || '').match(/^\s*(\d[\d-]*@g\.us)\s*(?:[,\s]\s*([\s\S]*))?$/i);
+    return hit ? { jid: hit[1].toLowerCase(), text: (hit[2] || '').trim() } : null;
+}
+
+// Copy the replied message into `jid` (tagging everyone). Returns an error text, or null when sent.
+async function copyReplied(conn, jid, ctx, mentions) {
+    const raw = ctx.quotedMessage;
+    if (isViewOnce(raw)) return "❌ Can't copy a view once message";
+
+    const msg = unwrap(raw) || {};
+    const text = msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text);
+    if (text) {
+        await conn.sendMessage(jid, { text, mentions });
+        return null;
+    }
+
+    if (!COPYABLE.some(k => msg[k])) return "❌ Can't copy this type of message";
+    await conn.sendMessage(jid, {
+        forward: { key: { remoteJid: jid, fromMe: true, id: ctx.stanzaId }, message: msg },
+        mentions,
+        contextInfo: { mentionedJid: mentions }
+    });
+    return null;
+}
+
 cmd({
     pattern: "hidetag",
-    desc: "Tag all members without showing their names.",
+    desc: "Tag everyone without showing names. Reply to a message to copy it. Owner: .hidetag <group jid>,<message> from any chat.",
     category: "group",
     react: "👻",
     filename: __filename
 },
-async (conn, mek, m, { from, isGroup, isAdmins, groupMetadata, reply, q }) => {
+async (conn, mek, m, { from, isGroup, isAdmins, isOwner, groupMetadata, reply, q }) => {
     try {
-        if (!isGroup) return reply('❌වේසාවෝ මේක group command එකක් ');
-        if (!isAdmins) return reply('❌ තෝ admin කෙනෙක් නෙවේ නේ. ඒ නිසා හැමිනියන්  ');
+        // ".hidetag <group jid>,<message>" -> target group + message
+        const remote = parseGroupTarget(q);
+        const jid = remote ? remote.jid : from;
+        const text = remote ? remote.text : String(q || '').trim();
+        const external = jid !== from; // sending to a different chat than the one the command was typed in
 
-        const participants = groupMetadata.participants.map(p => p.id);
-        const text = q ? q : 'හුත්තෝ අවදානේ ඕනේ මට!';
+        if (external) {
+            if (!isOwner) return reply('❌ Owner only');
+        } else {
+            if (!isGroup) return reply(isOwner ? '❌ Group only. From here use: *.hidetag <group jid>,<message>*' : '❌ Group only');
+            if (!isAdmins && !isOwner) return reply('❌ Admins only');
+        }
 
-        await conn.sendMessage(from, { 
-            text: text, 
-            mentions: participants 
-        }, { quoted: mek });
+        // members to tag
+        let meta = groupMetadata;
+        if (external) {
+            meta = await conn.groupMetadata(jid).catch(() => null);
+            if (!meta) return reply('❌ Group not found (is the bot in it?)');
+        }
+        const participants = meta.participants.map(p => p.id);
+
+        if (text) {
+            // typed message
+            await conn.sendMessage(jid, { text, mentions: participants });
+        } else {
+            const ctx = getReplyContext(mek, m);
+            if (ctx) {
+                // reply -> copy of the replied message
+                const problem = await copyReplied(conn, jid, ctx, participants);
+                if (problem) return reply(problem);
+            } else if (m && m.quoted) {
+                return reply("❌ Can't read the replied message");
+            } else {
+                // nothing typed, no reply -> blank message
+                await conn.sendMessage(jid, { text: BLANK, mentions: participants });
+            }
+        }
+
+        if (external) reply('✅ Sent');
 
     } catch (e) {
         console.log(e);
