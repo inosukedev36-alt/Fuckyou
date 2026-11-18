@@ -1,9 +1,7 @@
 // plugins/jid.js
 const { cmd } = require('../command')
 
-// ⚠️ වැදගත්: sendNative සහ copy ඔබේ project එකේ තියෙන නිවැරදි තැනින් import කරන්න.
-// ඔබේ btn3 code එකේ මේවා තියෙන path එක හොයාගෙන මෙතනට දාන්න. (උදා: require('../lib/button') වගේ)
-const { sendNative, copy } = require('../lib/button') 
+// ⚠️ sendNative සහ copy ඔබේ bot එකේ globally තියෙන නිසා මෙතන require කරන්නේ නෑ.
 
 const ALL_ADMINS_ONLY = false
 
@@ -44,7 +42,7 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
         const key = mek.key || {}
         const ctx = mek.message?.extendedTextMessage?.contextInfo
 
-        // 1) /jid all → every member's PN JID (groups only)
+        // 1) /jid all
         if (input.toLowerCase() === 'all') {
             if (!isGroup) return reply('❌ `all` can only be used inside a group.')
             if (ALL_ADMINS_ONLY && !isAdmins && !isOwner) return reply('❌ Only group admins can use this.')
@@ -62,7 +60,7 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             }, { quoted: mek })
         }
 
-        // 2) /jid <channel link> → channel JID (LID නෑ)
+        // 2) /jid <channel link>
         const channel = input.match(/whatsapp\.com\/channel\/([\w-]+)/i)
         if (channel) {
             if (typeof conn.newsletterMetadata !== 'function') {
@@ -78,7 +76,7 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             })
         }
 
-        // 3) /jid 94711234567 → that number's JID
+        // 3) /jid 94711234567
         if (input) {
             if (!/^[@+]?[\d\s()-]+$/.test(input)) {
                 return reply('❌ Invalid input.\n\n*Usage*\n/jid\n/jid all\n/jid 94711234567\n/jid <channel link>\nReply to a message + /jid')
@@ -108,7 +106,7 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             })
         }
 
-        // 4) reply + /jid → replied user's PN + LID
+        // 4) reply + /jid
         const replySender    = m.quoted?.sender || ctx?.participant
         const replySenderAlt = ctx?.participantAlt || m.quoted?.senderAlt
 
@@ -140,7 +138,7 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             })
         }
 
-        // 5) plain /jid → this chat's JID (+ LID for inbox)
+        // 5) plain /jid
         if (isGroup) {
             return sendNative(conn, from, mek, {
                 text: `👥 *Group JID*\n\nTap to copy 👇`,
@@ -148,7 +146,6 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             })
         }
 
-        // inbox → remoteJid (often @lid) + remoteJidAlt (@s.whatsapp.net)
         const { pn, lid } = collectJids(key.remoteJid, key.remoteJidAlt)
         const rawButtons = buildJidButtons(pn, lid, from)
         const formattedButtons = rawButtons.map(b => copy(b.label, b.value))
