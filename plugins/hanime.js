@@ -77,7 +77,6 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
   let loadingKey = null;
   let percent = 0;
 
-  // 10% කින් 10% වැඩිවෙන විදිහට • අකුරු 10ක් හදන function එක
   function getBarText(p) {
     const filled = Math.min(10, Math.floor(p / 10));
     return '•'.repeat(filled) + '\u00A0'.repeat(10 - filled);
@@ -94,7 +93,6 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
     console.error('[HANIME] Failed to send loading message:', e.message);
   }
 
-  // ස්වයංක්‍රීයව 90% වෙනකන් පිරෙනවා
   const interval = setInterval(async () => {
     if (percent >= 90) return;
     percent += 10;
@@ -115,13 +113,11 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
       clearInterval(interval);
       try {
         if (loadingKey) {
-          // අන්තිමට 100% පිරිලා ඉවර වෙනවා
           await conn.sendMessage(from, { 
             text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(100)}\n✅ Done!`, 
             edit: loadingKey 
           });
           await sleep(1000);
-          // ඊට පස්සේ Success message එක පෙන්නනවා
           await conn.sendMessage(from, { text: finalText, edit: loadingKey });
         }
       } catch (_) {}
@@ -234,14 +230,13 @@ async function getDownloadLinks(pageUrl) {
 }
 
 // ============================================================
-// Helper: Send Video & Cleanup
+// Helper: Send Video & Cleanup (Caption එක ඉවත් කර ඇත)
 // ============================================================
 async function sendVideoToTargets(conn, from, session, quotedMsg) {
   const { selectedEpisode, selectedQuality, targetJids, customTag } = session;
   const total = targetJids.length;
 
   const fileName = buildFileName(selectedEpisode.title, customTag);
-  const caption = `🎬 ${selectedEpisode.title}\n📥 Quality: ${selectedQuality.name}`;
 
   await simulateTyping(conn, from, randomDelay(2000, 4000));
 
@@ -256,11 +251,11 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
         await simulateTyping(conn, from, randomDelay(5000, 10000));
       }
 
+      // 🚨 Caption එක අයින් කළා (Document එක විතරයි යන්නේ)
       await conn.sendMessage(jid, {
         document: { url: selectedQuality.url },
         mimetype: 'video/mp4',
-        fileName: fileName,
-        caption: caption
+        fileName: fileName
       });
       success++;
 
