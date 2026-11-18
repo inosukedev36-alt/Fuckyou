@@ -5,49 +5,39 @@
 //  /jid <channel link>       → the channel's JID (...@newsletter)
 //  (reply to a message) /jid → the JID + LID of the person you replied to
 //  /jid all                  → JIDs of every member in the group
-//
-//  ✨ cta_copy buttons: tap → copy (PN JID / LID)
 
 const { cmd } = require('../command')
 
-// true කළොත් `/jid all` පාවිච්චි කරන්න පුළුවන් group admins / owner ට විතරයි
+// ⚠️ ඔබේ framework එකේ sendNative සහ copy තියෙන තැන මෙතනින් import කරගන්න
+// (ඔබේ අනිත් plugins වල තියෙන විදිහටම path එක වෙනස් කරන්න)
+// උදාහරණයක් විදිහට:
+// const { sendNative, copy } = require('../lib/button'); 
+
 const ALL_ADMINS_ONLY = false
 
 const isPN  = (jid) => !!jid && jid.endsWith('@s.whatsapp.net')
 const isLID = (jid) => !!jid && jid.endsWith('@lid')
 
-// group member කෙනෙකුගේ phone-number JID එක
 const memberJid = (p) => p.phoneNumber || p.jid || p.id
 
-// ─── multi-button copy helper ───
-// buttons = [{ label, value }, ...]
-async function sendCopyButtons(conn, from, mek, { title, buttons, footer = 'Tap a button to copy 👇' }) {
+// ─── ඔබේ sendNative සහ copy පාවිච්චි කරන helper එක ───
+async function sendJidButtons(conn, from, mek, { title, buttonsData }) {
     try {
-        return await conn.sendMessage(from, {
-            interactiveMessage: {
-                header: { title, hasMediaAttachment: false },
-                body: { text: 'Tap to copy:' },
-                footer: { text: footer },
-                nativeFlowMessage: {
-                    buttons: buttons.map(b => ({
-                        name: 'cta_copy',
-                        buttonParamsJson: JSON.stringify({
-                            display_text: b.label,
-                            copy_code: b.value
-                        })
-                    }))
-                }
-            }
-        }, { quoted: mek })
+        // buttonsData එකේ තියෙන දේවල් copy() ඇතුලට යවනවා
+        const formattedButtons = buttonsData.map(b => copy(b.label, b.value));
+        
+        return await sendNative(conn, from, mek, {
+            text: title + "\n\nTap to copy 👇",
+            buttons: formattedButtons
+        })
     } catch (e) {
-        // interactive message fail වුණොත් → plain text fallback
-        console.log('interactive send failed, fallback:', e.message)
-        const text = title + '\n\n' + buttons.map(b => `${b.label}\n${b.value}`).join('\n\n')
+        console.log('Button send failed, fallback:', e.message)
+        // Error එකක් ආවොත් text විදිහට යවනවා
+        const text = title + '\n\n' + buttonsData.map(b => `${b.label}\n${b.value}`).join('\n\n')
         return conn.sendMessage(from, { text }, { quoted: mek })
     }
 }
 
-// PN + LID candidates වලින් button list එකක් හදනවා
 function buildJidButtons(pn, lid, fallback) {
     const buttons = []
     if (pn)  buttons.push({ label: '📋 Copy PN JID', value: pn })
@@ -58,7 +48,6 @@ function buildJidButtons(pn, lid, fallback) {
     return buttons
 }
 
-// jid-like values ගොඩකින් PN එකයි LID එකයි වෙන් කරලා ගන්නවා
 function collectJids(...candidates) {
     let pn = null, lid = null
     for (const c of candidates) {
@@ -94,11 +83,11 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
                           : isPN(p.id)         ? p.id : null
                 const lid = isLID(p.lid) ? p.lid
                           : isLID(p.id)  ? p.id : null
-                // PN + LID දෙකම තියෙනවා නම් දෙකම පෙන්නනවා
                 if (pn && lid) return `${pn}  |  ${lid}`
                 return pn || lid || String(p.id || '')
             })
 
+            // group එකේ ගොඩක් අය ඉන්න නිසා මේක text විදිහටම යවනවා
             return conn.sendMessage(from, {
                 text: `👥 *${meta.subject}*\nMembers: ${lines.length}\n\n\`\`\`${lines.join('\n')}\`\`\``
             }, { quoted: mek })
@@ -113,9 +102,10 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             const meta = await conn.newsletterMetadata('invite', channel[1])
             if (!meta?.id) return reply('❌ Channel not found. Check the link and try again.')
             const name = meta.name || meta.thread_metadata?.name?.text
-            return sendCopyButtons(conn, from, mek, {
-                title: '📢 Channel JID' + (name ? ` — ${name}` : ''),
-                buttons: [{ label: '📋 Copy Channel JID', value: meta.id }]
+            
+            return sendJidButtons(conn, from, mek, {
+                title: '📢 *Channel JID*' + (name ? ` — ${name}` : ''),
+                buttonsData: [{ label: '📋 Copy Channel JID', value: meta.id }]
             })
         }
 
@@ -136,16 +126,16 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
                 const [res] = (await conn.onWhatsApp(number)) || []
                 if (res?.exists) jid = res.jid
                 else exists = false
-            } catch (_) { /* lookup failed – still return the JID */ }
+            } catch (_) { }
 
             if (!exists) {
                 return conn.sendMessage(from, {
                     text: `👤 *User JID*\n\n\`\`\`${jid}\`\`\`\n\n⚠️ This number does not seem to be on WhatsApp.`
                 }, { quoted: mek })
             }
-            return sendCopyButtons(conn, from, mek, {
-                title: '👤 User JID',
-                buttons: [{ label: '📋 Copy PN JID', value: jid }]
+            return sendJidButtons(conn, from, mek, {
+                title: '👤 *User JID*',
+                buttonsData: [{ label: '📋 Copy PN JID', value: jid }]
             })
         }
 
@@ -156,7 +146,6 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
         if (replySender) {
             let { pn, lid } = collectJids(replySender, replySenderAlt)
 
-            // group එකේ නම් metadata එකෙන් enrich කරගන්නවා (LID ↔ PN map)
             if (isGroup && (!pn || !lid)) {
                 try {
                     const meta = await conn.groupMetadata(from)
@@ -174,26 +163,26 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             }
 
             const buttons = buildJidButtons(pn, lid, replySender)
-            return sendCopyButtons(conn, from, mek, {
-                title: '👤 Replied user JIDs',
-                buttons
+            return sendJidButtons(conn, from, mek, {
+                title: '👤 *Replied user JIDs*',
+                buttonsData: buttons
             })
         }
 
         // 5) plain /jid → this chat's JID (+ LID for inbox)
         if (isGroup) {
-            return sendCopyButtons(conn, from, mek, {
-                title: '👥 Group JID',
-                buttons: [{ label: '📋 Copy Group JID', value: from }]
+            return sendJidButtons(conn, from, mek, {
+                title: '👥 *Group JID*',
+                buttonsData: [{ label: '📋 Copy Group JID', value: from }]
             })
         }
 
         // inbox → remoteJid (often @lid) + remoteJidAlt (@s.whatsapp.net)
         const { pn, lid } = collectJids(key.remoteJid, key.remoteJidAlt)
         const buttons = buildJidButtons(pn, lid, from)
-        return sendCopyButtons(conn, from, mek, {
-            title: '👤 User JIDs',
-            buttons
+        return sendJidButtons(conn, from, mek, {
+            title: '👤 *User JIDs*',
+            buttonsData: buttons
         })
 
     } catch (e) {
