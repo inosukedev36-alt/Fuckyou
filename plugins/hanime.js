@@ -4,16 +4,18 @@ const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('
 // ============================================================
 // Global Variables
 // ============================================================
-let globalConn = null; // Baileys connection reference
-const sessions = {};   // User sessions: { [from]: { step, query, results, selectedEpisode, qualities, timeout } }
+let globalConn = null;
+const sessions = {};
 
 const SEARCH_API = 'https://poddax-api.dev/hanime/search?text=';
 const DOWNLOAD_API = 'https://poddax-api.dev/hanime/download?url=';
 
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // විනාඩි 5
+const LOADING_INTERVAL_MS = 1500;         // loading bar update වන කාලය
+const TOTAL_BARS = 20;                     // 5% = 1 bar, 20 bars = 100%
 
 // ============================================================
-// Helper: API Request (Native Fetch)
+// Helper: API Request
 // ============================================================
 async function fetchAPI(url) {
   const res = await fetch(url);
@@ -24,7 +26,7 @@ async function fetchAPI(url) {
 }
 
 // ============================================================
-// Helper: Session cleanup timer
+// Helper: Session timeout reset
 // ============================================================
 function resetSessionTimeout(from) {
   const s = sessions[from];
@@ -39,7 +41,90 @@ function resetSessionTimeout(from) {
 }
 
 // ============================================================
-// Helper: Interactive List එකක් යැවීම
+// Helper: Loading bar (• = filled, ○ = empty, 5% = 1 filled)
+// ============================================================
+function renderBar(percent) {
+  const filled = Math.min(TOTAL_BARS, Math.floor(percent / 5));
+  return '•'.repeat(filled) + '○'.repeat(TOTAL_BARS - filled);
+}
+
+function buildLoadingText(title, subtitle, totalTargets, percent) {
+  const targetLine = totalTargets > 1 ? `\n📤 Sending to ${totalTargets} chats` : '';
+  return `📥 Downloading: ${title}\n📦 ${subtitle}${targetLine}\n\n[${renderBar(percent)}] ${percent}%\n⏳ Please wait...`;
+}
+
+async function startLoadingBar(conn, from, quotedMsg, title, subtitle, totalTargets) {
+  let loadingKey = null;
+  let percent = 0;
+
+  try {
+    const sent = await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, 0) }, { quoted: quotedMsg });
+    loadingKey = sent?.key || null;
+  } catch (e) {
+    console.error('[HANIME] Failed to send loading message:', e.message);
+  }
+
+  const interval = setInterval(async () => {
+    if (percent >= 95) return;
+    percent = Math.min(95, percent + Math.floor(Math.random() * 3) + 3);
+    try {
+      if (loadingKey) {
+        await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, percent), edit: loadingKey });
+      }
+    } catch (_) {}
+  }, LOADING_INTERVAL_MS);
+
+  return {
+    loadingKey,
+    stop: () => clearInterval(interval),
+    finish: async (finalText) => {
+      clearInterval(interval);
+      // 100% දක්වා smooth jump
+      let p = percent;
+      while (p < 100) {
+        p = Math.min(100, p + 10);
+        try {
+          await conn.sendMessage(from, { text: buildLoadingText(title, subtitle, totalTargets, p), edit: loadingKey });
+          await new Promise(r => setTimeout(r, 120));
+        } catch (_) {}
+      }
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        await conn.sendMessage(from, { text: finalText, edit: loadingKey });
+        setTimeout(async () => {
+          try { await conn.sendMessage(from, { delete: loadingKey }); } catch (_) {}
+        }, 4000);
+      } catch (_) {}
+    }
+  };
+}
+
+// ============================================================
+// Helper: Filename builders
+// Format: (EP01)TitleName[CustomTag].mp4
+// ============================================================
+function extractEpisodeNum(title, fallbackIndex) {
+  const patterns = [
+    /\(ep?[\s._-]*(\d{1,4})\)/i,
+    /\bep?[\s._-]*(\d{1,4})\b/i,
+    /\bepisode[\s._-]*(\d{1,4})\b/i,
+    /^\s*(\d{1,4})\b/
+  ];
+  for (const p of patterns) {
+    const m = title.match(p);
+    if (m) return String(m[1]).padStart(2, '0');
+  }
+  return String(fallbackIndex).padStart(2, '0');
+}
+
+function buildFileName(title, episodeNum, customTag) {
+  const cleanTitle = title.replace(/[^\w]/g, '').substring(0, 50) || 'Video';
+  const safeTag = (customTag || '').replace(/[\[\]\/\\:*?"<>|]/g, '').trim().substring(0, 30) || 'HANIME';
+  return `(EP${episodeNum})${cleanTitle}[${safeTag}].mp4`;
+}
+
+// ============================================================
+// Helper: Interactive list
 // ============================================================
 async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, footerText, sections, imageUrl = null) {
   try {
@@ -51,15 +136,13 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
           { upload: conn.waUploadToServer }
         );
       } catch (imgErr) {
-        // image prepare fail වුණොත් crash නොවී continue කරයි
-        console.error('[HANIME] Media prepare failed, sending without image:', imgErr.message);
+        console.error('[HANIME] Media prepare failed:', imgErr.message);
         media = {};
       }
     }
 
     const listParams = { title: headerTitle, sections };
 
-    // viewOnceMessage ඉවත් කර කෙලින්ම interactiveMessage යවයි
     const msg = generateWAMessageFromContent(from, {
       interactiveMessage: proto.Message.InteractiveMessage.fromObject({
         header: proto.Message.InteractiveMessage.Header.fromObject({
@@ -82,14 +165,13 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
     return true;
   } catch (e) {
     console.error('[HANIME] Interactive send error:', e);
-    // fallback: plain text එකක් යවයි
     await conn.sendMessage(from, { text: bodyText + '\n\n' + footerText }, { quoted: mek });
     return false;
   }
 }
 
 // ============================================================
-// Helper: Search API
+// Helper: API search / download
 // ============================================================
 async function searchHanime(query) {
   const results = await fetchAPI(SEARCH_API + encodeURIComponent(query));
@@ -97,9 +179,6 @@ async function searchHanime(query) {
   return results.filter(item => item.title && item.url);
 }
 
-// ============================================================
-// Helper: Download API
-// ============================================================
 async function getDownloadLinks(pageUrl) {
   const qualities = await fetchAPI(DOWNLOAD_API + encodeURIComponent(pageUrl));
   if (!Array.isArray(qualities)) throw new Error('Download links are not an array.');
@@ -107,7 +186,55 @@ async function getDownloadLinks(pageUrl) {
 }
 
 // ============================================================
-// Helper: Episode තෝරාගත් පසු quality ලැයිස්තුව යැවීම
+// Helper: Send video to all targets (loading bar සමඟ)
+// ============================================================
+async function sendVideoToTargets(conn, from, session, quotedMsg) {
+  const { selectedEpisode, selectedQuality, targetJids, customTag, selectedIndex } = session;
+  const total = targetJids.length;
+
+  const episodeNum = extractEpisodeNum(selectedEpisode.title, (selectedIndex || 0) + 1);
+  const fileName = buildFileName(selectedEpisode.title, episodeNum, customTag);
+  const caption = `🎬 ${selectedEpisode.title}\n📥 Quality: ${selectedQuality.name}`;
+
+  const loading = await startLoadingBar(
+    conn, from, quotedMsg,
+    selectedEpisode.title,
+    `Quality: ${selectedQuality.name}`,
+    total
+  );
+
+  let success = 0, failed = 0;
+  const failedJids = [];
+
+  for (const jid of targetJids) {
+    try {
+      await conn.sendMessage(jid, {
+        document: { url: selectedQuality.url },
+        mimetype: 'video/mp4',
+        fileName: fileName,
+        caption: caption
+      });
+      success++;
+    } catch (e) {
+      failed++;
+      failedJids.push(jid);
+      console.error(`[HANIME] Failed to send to ${jid}:`, e.message);
+    }
+  }
+
+  let finalText;
+  if (failed === 0) {
+    finalText = `✅ Downloaded & sent to ${success} chat(s)!\n📁 File: ${fileName}`;
+  } else {
+    finalText = `⚠️ Sent to ${success}, failed ${failed}.\n📁 File: ${fileName}\n❌ Failed: ${failedJids.join(', ')}`;
+  }
+
+  await loading.finish(finalText);
+  delete sessions[from];
+}
+
+// ============================================================
+// Helper: Episode selection → quality ලැයිස්තුව යවයි
 // ============================================================
 async function handleEpisodeSelection(conn, from, session, selectedItem, quotedMsg) {
   try {
@@ -125,29 +252,16 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
     session.qualities = qualities;
 
     let body = `🎬 ${selectedItem.title}\n\n📥 Available Qualities\n\n`;
-    qualities.forEach((q, i) => {
-      body += `${i + 1} | ${q.name}\n`;
-    });
+    qualities.forEach((q, i) => { body += `${i + 1} | ${q.name}\n`; });
     body += `0 | ❌ Close\n\nSend the quality number.`;
 
     const sections = [{
       title: 'Available Qualities',
-      rows: qualities.map((q, i) => ({
-        title: `${i + 1} | ${q.name}`,
-        description: '',
-        id: `q_${i}`
-      }))
+      rows: qualities.map((q, i) => ({ title: `${i + 1} | ${q.name}`, description: '', id: `q_${i}` }))
     }];
     sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
 
-    await sendInteractiveList(
-      conn, from, quotedMsg,
-      'Select Quality',
-      body,
-      'Send a number or select from the list',
-      sections,
-      selectedItem.image || null
-    );
+    await sendInteractiveList(conn, from, quotedMsg, 'Select Quality', body, 'Send a number or select from the list', sections, selectedItem.image || null);
   } catch (e) {
     console.error('[HANIME] Episode selection error:', e);
     await conn.sendMessage(from, { text: '⚠️ Error: ' + e.message }, { quoted: quotedMsg });
@@ -156,36 +270,26 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
 }
 
 // ============================================================
-// Helper: Quality තෝරාගත් පසු වීඩියෝව document එකක් ලෙස යැවීම
+// Helper: Quality selection → destination අහයි
 // ============================================================
 async function handleQualitySelection(conn, from, session, qualityIndex, quotedMsg) {
-  try {
-    const quality = session.qualities[qualityIndex];
-    if (!quality) {
-      await conn.sendMessage(from, { text: '❌ Invalid selection.' }, { quoted: quotedMsg });
-      return;
-    }
-
-    const videoUrl = quality.url;
-    const safeTitle = session.selectedEpisode.title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
-
-    await conn.sendMessage(from, {
-      document: { url: videoUrl },
-      mimetype: 'video/mp4',
-      fileName: `${safeTitle}_${quality.name}.mp4`,
-      caption: `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}`
-    }, { quoted: quotedMsg });
-
-    delete sessions[from];
-  } catch (e) {
-    console.error('[HANIME] Quality selection error:', e);
-    await conn.sendMessage(from, { text: '⚠️ Failed to send video: ' + e.message }, { quoted: quotedMsg });
-    delete sessions[from];
+  const quality = session.qualities[qualityIndex];
+  if (!quality) {
+    await conn.sendMessage(from, { text: '❌ Invalid selection.' }, { quoted: quotedMsg });
+    return;
   }
+
+  session.selectedQuality = quality;
+  session.step = 'select_destination';
+  resetSessionTimeout(from);
+
+  await conn.sendMessage(from, {
+    text: `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}\n\n📤 Where to send?\n\n1 | Inbox (DM)\n2 | Group(s)\n0 | ❌ Cancel\n\nReply with a number.`
+  }, { quoted: quotedMsg });
 }
 
 // ============================================================
-// ප්‍රධාන command එක
+// Command
 // ============================================================
 cmd({
   pattern: 'hanime',
@@ -193,7 +297,6 @@ cmd({
   category: 'main',
   filename: __filename
 }, async (conn, mek, m, { from, reply, q, text }) => {
-  // Listener එකට අවශ්‍ය නිසා global connection reference එක set කරයි
   globalConn = conn;
 
   try {
@@ -202,7 +305,6 @@ cmd({
       return reply('Please provide a name to search.\nExample: .hanime haha');
     }
 
-    // පරණ session එකක් තිබේ නම් එය clear කරයි
     if (sessions[from]) {
       if (sessions[from].timeout) clearTimeout(sessions[from].timeout);
       delete sessions[from];
@@ -222,31 +324,18 @@ cmd({
     resetSessionTimeout(from);
 
     let body = `🔍 Search: ${query}\n\n`;
-    results.forEach((item, i) => {
-      body += `${i + 1} | ${item.title}\n`;
-    });
+    results.forEach((item, i) => { body += `${i + 1} | ${item.title}\n`; });
     body += `0 | ❌ Close\n\nSend the video number.`;
 
     const sections = [{
       title: 'Search Results',
-      rows: results.map((item, i) => ({
-        title: `${i + 1} | ${item.title}`,
-        description: '',
-        id: `ep_${i}`
-      }))
+      rows: results.map((item, i) => ({ title: `${i + 1} | ${item.title}`, description: '', id: `ep_${i}` }))
     }];
     sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
 
     const imageUrl = results[0]?.image || null;
 
-    await sendInteractiveList(
-      conn, from, mek,
-      'Search Results',
-      body,
-      'Send a number or select from the list',
-      sections,
-      imageUrl
-    );
+    await sendInteractiveList(conn, from, mek, 'Search Results', body, 'Send a number or select from the list', sections, imageUrl);
   } catch (e) {
     console.error('[HANIME] Command error:', e);
     reply('⚠️ Error: ' + e.message);
@@ -258,14 +347,13 @@ cmd({
 });
 
 // ============================================================
-// Listener එක Module මට්ටමේ attach කරයි
+// Listener
 // ============================================================
 if (!global._hanimeListenerAttached) {
   global._hanimeListenerAttached = true;
 
   const attachListener = () => {
     if (!globalConn) {
-      // connection එක තාම ready නැත්නම් තත්පරයකින් නැවත උත්සාහ කරයි
       setTimeout(attachListener, 1000);
       return;
     }
@@ -279,10 +367,10 @@ if (!global._hanimeListenerAttached) {
         const session = sessions[from];
         if (!session) return;
 
-        // Debug කරන්න ඕන නම් uncomment කරන්න:
+        // Debug (ඕන නම් uncomment):
         // console.log('[HANIME] incoming:', JSON.stringify(msg.message, null, 2));
 
-        // viewOnce / ephemeral wrapper ඉවත් කරයි
+        // Wrap ඉවත් කරයි
         const inner =
           msg.message?.viewOnceMessage?.message ||
           msg.message?.viewOnceMessageV2?.message ||
@@ -296,15 +384,67 @@ if (!global._hanimeListenerAttached) {
           inner.imageMessage?.caption ||
           '';
 
+        // ============================================================
+        // Step: enter_jids - user group JIDs එවයි (2කට වඩා support)
+        // ============================================================
+        if (session.step === 'enter_jids') {
+          const raw = textMsg.trim();
+          if (!raw) return;
+
+          const senderJid = msg.key.participant || msg.key.remoteJid;
+          const jids = raw.split(/[\n,;]+/)
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(j => {
+              const lower = j.toLowerCase();
+              if (lower === 'inbox' || lower === 'me') return senderJid;
+              if (j.includes('@')) return j;
+              if (/^\d+$/.test(j)) return j + '@g.us';
+              return j;
+            });
+
+          if (jids.length === 0) {
+            await globalConn.sendMessage(from, { text: '❌ No valid JIDs provided.' }, { quoted: msg });
+            return;
+          }
+
+          session.targetJids = jids;
+          session.step = 'enter_tag';
+          resetSessionTimeout(from);
+
+          const jidList = jids.map((j, i) => `${i + 1}. ${j}`).join('\n');
+          await globalConn.sendMessage(from, {
+            text: `✅ ${jids.length} target(s) set:\n${jidList}\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
+          }, { quoted: msg });
+          return;
+        }
+
+        // ============================================================
+        // Step: enter_tag - custom filename tag එවයි → file යවයි
+        // ============================================================
+        if (session.step === 'enter_tag') {
+          const raw = textMsg.trim();
+
+          if (raw.toLowerCase() === 'cancel') {
+            delete sessions[from];
+            await globalConn.sendMessage(from, { text: '❌ Cancelled.' }, { quoted: msg });
+            return;
+          }
+
+          session.customTag = raw || 'HANIME';
+          resetSessionTimeout(from);
+
+          await sendVideoToTargets(globalConn, from, session, msg);
+          return;
+        }
+
+        // ============================================================
+        // Interactive list / button response parse කිරීම
+        // ============================================================
         let listId = null;
 
-        // 1) පරණ listMessage response
         listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId || null;
-
-        // 2) Template buttons response
         if (!listId) listId = inner.buttonsResponseMessage?.selectedButtonId || null;
-
-        // 3) Native flow (single_select → ප්‍රධාන case එක)
         if (!listId) {
           const paramsJson =
             inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
@@ -319,16 +459,62 @@ if (!global._hanimeListenerAttached) {
           }
         }
 
-        let selection = null;
+        // Close / cancel check
+        if (listId === 'close') {
+          if (session.timeout) clearTimeout(session.timeout);
+          delete sessions[from];
+          await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
+          return;
+        }
 
-        // ID එකෙන් තේරීම හඳුනාගනී
-        if (listId) {
-          if (listId === 'close') {
+        // ============================================================
+        // Step: select_destination - Inbox ද Group(s) ද තෝරයි
+        // ============================================================
+        if (session.step === 'select_destination') {
+          const num = parseInt(textMsg.trim());
+
+          if (isNaN(num)) {
+            await globalConn.sendMessage(from, { text: '❌ Please reply with a number (1, 2, or 0).' }, { quoted: msg });
+            return;
+          }
+
+          if (num === 0) {
             if (session.timeout) clearTimeout(session.timeout);
             delete sessions[from];
             await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
             return;
           }
+
+          if (num === 1) {
+            const senderJid = msg.key.participant || msg.key.remoteJid;
+            session.targetJids = [senderJid];
+            session.step = 'enter_tag';
+            resetSessionTimeout(from);
+            await globalConn.sendMessage(from, {
+              text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
+            }, { quoted: msg });
+            return;
+          }
+
+          if (num === 2) {
+            session.step = 'enter_jids';
+            resetSessionTimeout(from);
+            await globalConn.sendMessage(from, {
+              text: `📤 Send group JID(s). You can send multiple, separated by comma or newline.\n\nExample:\n1203631@g.us, 1203632@g.us\n\nOr type "inbox" to include your DM.`
+            }, { quoted: msg });
+            return;
+          }
+
+          await globalConn.sendMessage(from, { text: '❌ Invalid option.' }, { quoted: msg });
+          return;
+        }
+
+        // ============================================================
+        // Step: select_episode / select_quality - list/number selection
+        // ============================================================
+        let selection = null;
+
+        if (listId) {
           const parts = listId.split('_');
           const type = parts[0];
           const index = parseInt(parts[1]);
@@ -336,11 +522,8 @@ if (!global._hanimeListenerAttached) {
           else if (type === 'q' && !isNaN(index)) selection = { type: 'quality', index };
         }
 
-        // Number / text reply (fallback)
         if (!selection && textMsg && textMsg.trim() !== '') {
-          const cleaned = textMsg.trim();
-          // "1 | title" වගේ ආවොත් මුල් අංකය ගනී
-          const match = cleaned.match(/^(\d+)/);
+          const match = textMsg.trim().match(/^(\d+)/);
           if (match) {
             const num = parseInt(match[1]);
             if (num === 0) {
@@ -363,6 +546,7 @@ if (!global._hanimeListenerAttached) {
             await globalConn.sendMessage(from, { text: '❌ Invalid number.' }, { quoted: msg });
             return;
           }
+          session.selectedIndex = selection.index;
           await handleEpisodeSelection(globalConn, from, session, item, msg);
         } else if (selection.type === 'quality' && session.step === 'select_quality') {
           await handleQualitySelection(globalConn, from, session, selection.index, msg);
