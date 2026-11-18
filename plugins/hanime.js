@@ -20,15 +20,12 @@ const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 
-// මිනිහෙක් type කරනවා වගේ පෙන්නන්න function එකක්
 async function simulateTyping(conn, from, durationMs) {
   try {
     await conn.sendPresenceUpdate('composing', from);
     await sleep(durationMs);
     await conn.sendPresenceUpdate('paused', from);
-  } catch (e) {
-    // Presence update fail උනත් process එක නවත්තන්නේ නෑ
-  }
+  } catch (e) {}
 }
 
 // ============================================================
@@ -63,41 +60,53 @@ function resetSessionTimeout(from) {
 async function cleanupSession(conn, from, session) {
   if (!session || !session.messageKeys || session.messageKeys.length === 0) return;
   
-  // File එක process වෙන්න ටිකක් වෙලා ගන්න නිසා පොඩි delay එකක්
   await sleep(3000);
 
   for (const key of session.messageKeys) {
     try {
       await conn.sendMessage(from, { delete: key });
-      await sleep(randomDelay(400, 800)); // Delete කරද්දිත් spam වෙන්නේ නැති වෙන්න delay
+      await sleep(randomDelay(400, 800)); 
     } catch (e) {}
   }
 }
 
 // ============================================================
-// Helper: Loading Animation (No percentage)
+// Helper: Loading Bar (10 blocks, only •, no percentage)
 // ============================================================
 async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
   let loadingKey = null;
-  let dots = 0;
+  let percent = 0;
+
+  // 10% කින් 10% වැඩිවෙන විදිහට • අකුරු 10ක් හදන function එක
+  function getBarText(p) {
+    const filled = Math.min(10, Math.floor(p / 10));
+    return '•'.repeat(filled) + '\u00A0'.repeat(10 - filled);
+  }
 
   try {
-    const sent = await conn.sendMessage(from, { text: `📥 Downloading: ${title}\n📦 ${subtitle}\n⏳ Please wait...` }, { quoted: quotedMsg });
+    const sent = await conn.sendMessage(from, { 
+      text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(0)}\n⏳ Please wait...` 
+    }, { quoted: quotedMsg });
+    
     loadingKey = sent?.key || null;
     if (loadingKey) session.messageKeys.push(loadingKey);
   } catch (e) {
     console.error('[HANIME] Failed to send loading message:', e.message);
   }
 
+  // ස්වයංක්‍රීයව 90% වෙනකන් පිරෙනවා
   const interval = setInterval(async () => {
-    dots = (dots + 1) % 4;
-    const dotStr = '.'.repeat(dots);
+    if (percent >= 90) return;
+    percent += 10;
     try {
       if (loadingKey) {
-        await conn.sendMessage(from, { text: `📥 Downloading: ${title}\n📦 ${subtitle}\n⏳ Please wait${dotStr}`, edit: loadingKey });
+        await conn.sendMessage(from, { 
+          text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(percent)}\n⏳ Please wait...`, 
+          edit: loadingKey 
+        });
       }
     } catch (_) {}
-  }, 2000);
+  }, 1500);
 
   return {
     loadingKey,
@@ -106,6 +115,13 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
       clearInterval(interval);
       try {
         if (loadingKey) {
+          // අන්තිමට 100% පිරිලා ඉවර වෙනවා
+          await conn.sendMessage(from, { 
+            text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(100)}\n✅ Done!`, 
+            edit: loadingKey 
+          });
+          await sleep(1000);
+          // ඊට පස්සේ Success message එක පෙන්නනවා
           await conn.sendMessage(from, { text: finalText, edit: loadingKey });
         }
       } catch (_) {}
@@ -114,11 +130,25 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
 }
 
 // ============================================================
-// Helper: Filename Builder
+// Helper: Filename Builder (Spaces support & Sub-Eng removal)
 // ============================================================
 function buildFileName(title, customTag) {
-  const cleanTitle = title.replace(/[^\w]/g, '').substring(0, 50) || 'Video';
-  const safeTag = (customTag || '').replace(/[\[\]\/\\:*?"<>|]/g, '').trim().substring(0, 30) || 'HANIME';
+  // 1. [Sub-ENG] / (Sub) වගේ ටැග්ස් අයින් කිරීම
+  let cleanTitle = title.replace(/\s*[\[\(]?\s*(sub[- _]?eng|eng[- _]?sub|sub)\s*[\]\)]?\s*/ig, ' ');
+  
+  // 2. Windows/Android වලට අවුල් අකුරු අයින් කිරීම
+  cleanTitle = cleanTitle.replace(/[\\/:*?"<>|]/g, '');
+  
+  // 3. අමතර spaces ටික එක space එකකට හරවා, දිග අඩු කිරීම
+  cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim().substring(0, 60);
+  
+  if (!cleanTitle) cleanTitle = 'Video';
+
+  const safeTag = (customTag || '')
+    .replace(/[\[\]\\/:*?"<>|]/g, '') 
+    .trim() 
+    .substring(0, 30) || 'HANIME';
+
   return `${cleanTitle}[${safeTag}].mp4`;
 }
 
@@ -213,7 +243,6 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
   const fileName = buildFileName(selectedEpisode.title, customTag);
   const caption = `🎬 ${selectedEpisode.title}\n📥 Quality: ${selectedQuality.name}`;
 
-  // Anti-ban: File එක යවන්න කලින් typing එකක් පෙන්නනවා
   await simulateTyping(conn, from, randomDelay(2000, 4000));
 
   const loading = await startLoading(conn, from, quotedMsg, selectedEpisode.title, `Quality: ${selectedQuality.name}`, session);
@@ -223,7 +252,6 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
 
   for (const jid of targetJids) {
     try {
-      // Anti-ban: Group 2කට වඩා තිබ්බොත් file යවන්න කලින් විනාඩියක් විතර delay කරනවා (Spam block වෙන්නේ නැති වෙන්න)
       if (success > 0 || failed > 0) {
         await simulateTyping(conn, from, randomDelay(5000, 10000));
       }
@@ -236,8 +264,7 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
       });
       success++;
 
-      // File එක යවලා ඊළඟ එකට කලින් පොඩි නිහඬතාවයක්
-      await sleep(randomDelay(2000, 4000));
+      await sleep(randomDelay(2000, 4000)); 
 
     } catch (e) {
       failed++;
@@ -248,7 +275,7 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
 
   let finalText;
   if (failed === 0) {
-    finalText = `✅ 100% Downloaded & Uploaded!\n📁 File: ${fileName}`;
+    finalText = `✅ Downloaded & Uploaded!\n📁 File: ${fileName}`;
   } else {
     finalText = `⚠️ Sent to ${success}, failed ${failed}.\n📁 File: ${fileName}\n❌ Failed: ${failedJids.join(', ')}`;
   }
@@ -268,7 +295,6 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
     session.selectedEpisode = selectedItem;
     resetSessionTimeout(from);
 
-    // Anti-ban: API එකට යන්න කලින් typing පෙන්නනවා
     await simulateTyping(conn, from, randomDelay(1500, 3000));
 
     const qualities = await getDownloadLinks(selectedItem.url);
@@ -312,7 +338,6 @@ async function handleQualitySelection(conn, from, session, qualityIndex, quotedM
   session.step = 'select_destination';
   resetSessionTimeout(from);
 
-  // Anti-ban: පොඩි delay එකක් දාලා ඊට පස්සේ buttons යවනවා
   await simulateTyping(conn, from, randomDelay(1500, 2500));
 
   const bodyText = `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}\n\n📤 Where should I send the file?`;
@@ -352,7 +377,6 @@ cmd({
     sessions[from] = { step: 'search', query, messageKeys: [mek.key] };
     resetSessionTimeout(from);
 
-    // Anti-ban: Search කරන ගමන් මිනිහෙක් type කරනවා වගේ පෙන්නනවා
     await simulateTyping(conn, from, randomDelay(2000, 4000));
 
     const results = await searchHanime(query);
@@ -365,7 +389,6 @@ cmd({
     sessions[from].step = 'select_episode';
     resetSessionTimeout(from);
 
-    // Anti-ban: Result එක එවන්න කලින් තව ටිකක් delay කරනවා
     await simulateTyping(conn, from, randomDelay(1500, 3000));
 
     let body = `🔍 Search: ${query}\n\n`;
@@ -439,7 +462,7 @@ if (!global._hanimeListenerAttached) {
         }
 
         // ============================================================
-        // Step: select_destination (Button click / Text match)
+        // Step: select_destination
         // ============================================================
         if (session.step === 'select_destination') {
           let choice = null;
@@ -458,7 +481,6 @@ if (!global._hanimeListenerAttached) {
             session.step = 'enter_tag';
             resetSessionTimeout(from);
             
-            // Anti-ban: මිනිහෙක් reply කරනකන් ඉන්නවා වගේ පොඩි delay එකක්
             await simulateTyping(globalConn, from, randomDelay(1000, 2000));
             const sent = await globalConn.sendMessage(from, { text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL` }, { quoted: msg });
             session.messageKeys.push(sent.key);
