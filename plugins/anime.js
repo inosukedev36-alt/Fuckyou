@@ -3,12 +3,57 @@ const { cmd } = require('../command');
 const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('@dnuzi/baileys');
 
 // ============================================================
+// Config
+// ============================================================
+const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+const VA_LANGUAGES = ['Japanese', 'English'];                          // voice-actor languages shown under each character
+const TRANSIENT_STEPS = ['searching', 'show_details', 'loading_full']; // steps where the user is waiting for output
+
+// ============================================================
 // Sessions
 // ============================================================
 let globalConn = null;
 const aniInfoSessions = {};
 global._aniInfoSessions = aniInfoSessions;
-const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Ends a session AND its expiry timer (a leftover timer must never touch a later session)
+function endSession(from) {
+  const s = aniInfoSessions[from];
+  if (!s) return;
+  if (s.timeout) clearTimeout(s.timeout);
+  delete aniInfoSessions[from];
+}
+
+function resetSessionTimeout(from) {
+  const s = aniInfoSessions[from];
+  if (!s) return;
+  if (s.timeout) clearTimeout(s.timeout);
+  s.timeout = setTimeout(() => {
+    // expire only THIS session, never a newer one started in the same chat
+    if (aniInfoSessions[from] === s) {
+      delete aniInfoSessions[from];
+      console.log(`[ANIINFO] Session expired for ${from}`);
+    }
+  }, SESSION_TIMEOUT_MS);
+}
+
+// ---------- who is talking (matters in groups) ----------
+const isGroupJid = (jid) => typeof jid === 'string' && jid.endsWith('@g.us');
+
+function senderOf(key) {
+  if (!key) return null;
+  if (key.fromMe) return 'me';
+  return key.participant || key.remoteJid || null;
+}
+
+function sameSender(a, b) {
+  if (!a || !b || a === b) return true;
+  if (a === 'me' || b === 'me') return false;      // owner vs. somebody else
+  const [ua, sa] = String(a).split('@');
+  const [ub, sb] = String(b).split('@');
+  if (sa !== sb) return true;                      // e.g. @lid vs @s.whatsapp.net: cannot compare, so do not block
+  return ua.split(':')[0] === ub.split(':')[0];
+}
 
 // ============================================================
 // Antiban Helpers
@@ -22,18 +67,6 @@ async function simulateTyping(conn, from, durationMs) {
     await sleep(durationMs);
     await conn.sendPresenceUpdate('paused', from);
   } catch (e) {}
-}
-
-function resetSessionTimeout(from) {
-  const s = aniInfoSessions[from];
-  if (!s) return;
-  if (s.timeout) clearTimeout(s.timeout);
-  s.timeout = setTimeout(() => {
-    if (aniInfoSessions[from]) {
-      delete aniInfoSessions[from];
-      console.log(`[ANIINFO] Session expired for ${from}`);
-    }
-  }, SESSION_TIMEOUT_MS);
 }
 
 // ============================================================
@@ -90,6 +123,33 @@ async function sendQuickButtons(conn, from, mek, bodyText, footerText, buttons) 
   }
 }
 
+const SERVER_BUTTONS = [
+  { text: '📚 Server 1 (MAL)', id: 'server_1' },
+  { text: '🎬 Server 2 (Bilibili)', id: 'server_2' },
+  { text: '🌸 Server 3 (Jikan Full)', id: 'server_3' }
+];
+
+function sendServerMenu(conn, from, quoted, bodyText) {
+  return sendQuickButtons(
+    conn, from, quoted, bodyText,
+    '📚 S1 = MAL (Basic)\n🎬 S2 = Bilibili (Video)\n🌸 S3 = Jikan (Full + Episodes + Characters + Staff + 18+)',
+    SERVER_BUTTONS
+  );
+}
+
+async function sendPoster(conn, from, quoted, url, title) {
+  if (!url) {
+    await conn.sendMessage(from, { text: '❌ No poster available.' }, { quoted });
+    return;
+  }
+  try {
+    await conn.sendMessage(from, { image: { url }, caption: `🖼️ *${title}* Poster` }, { quoted });
+  } catch (e) {
+    console.error('[ANIINFO] Poster send error:', e.message);
+    await conn.sendMessage(from, { text: '❌ Could not send the poster.' }, { quoted });
+  }
+}
+
 // ============================================================
 // Jikan API Fetchers
 // ============================================================
@@ -110,10 +170,11 @@ async function fetchJikanStaff(malId) {
 
 async function fetchJikanEpisodes(malId, page = 1) {
   const res = await axios.get(`https://api.jikan.moe/v4/anime/${malId}/episodes?page=${page}`, { timeout: 20000 });
+  // NOTE: this endpoint's pagination has NO "total" (only last_visible_page / has_next_page),
+  // so the total episode count comes from the anime's own data (fullData.episodes) instead.
   return {
     episodes: res.data?.data || [],
-    hasNext: res.data?.pagination?.has_next_page || false,
-    total: res.data?.pagination?.items?.total || 0
+    hasNext: res.data?.pagination?.has_next_page || false
   };
 }
 
@@ -143,20 +204,22 @@ function buildInfoText(data) {
   const airedFromObj = data.aired?.prop?.from || {};
   const airedToObj = data.aired?.prop?.to || {};
 
+  // Only prints the parts MAL actually knows: 03/10/2002, 10/2002 or just 2002
+  const pad2 = (n) => String(n).padStart(2, '0');
   const fmtDate = (o) => {
     if (!o || !o.year) return 'Unknown';
-    const d = String(o.day || '?').padStart(2, '0');
-    const m = String(o.month || '?').padStart(2, '0');
-    return `${d}/${m}/${o.year}`;
+    return [o.day ? pad2(o.day) : null, o.month ? pad2(o.month) : null, o.year].filter(Boolean).join('/');
   };
 
   const airedFrom = fmtDate(airedFromObj);
   const airedTo = fmtDate(airedToObj);
   const airedString = data.aired?.string
-    || (airedFrom !== 'Unknown' ? `${airedFrom} to ${airedTo}` : 'N/A');
+    || (airedFrom !== 'Unknown' ? `${airedFrom} to ${airedTo === 'Unknown' ? '?' : airedTo}` : 'N/A');
 
   // ---------- DURATION ----------
   const durationStr = data.duration || 'N/A';
+
+  const hash = (v) => (v == null ? 'N/A' : `#${v}`);
 
   return (
     `📋 *INFORMATION*\n` +
@@ -177,8 +240,8 @@ function buildInfoText(data) {
     `⏱️ *Duration:* ${durationStr}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `⭐ *Score:* ${data.score ?? 'N/A'} (${data.scored_by ?? 0} users)\n` +
-    `🏆 *Rank:* #${data.rank ?? 'N/A'}\n` +
-    `❤️ *Popularity:* #${data.popularity ?? 'N/A'}\n` +
+    `🏆 *Rank:* ${hash(data.rank)}\n` +
+    `❤️ *Popularity:* ${hash(data.popularity)}\n` +
     `🏢 *Studios:* ${formatNameList(data.studios)}\n` +
     `🎬 *Producers:* ${formatNameList(data.producers)}\n` +
     `📜 *Licensors:* ${formatNameList(data.licensors)}\n` +
@@ -205,7 +268,8 @@ function buildCharactersText(characters) {
     const charName = c.character?.name || 'Unknown';
     const role = c.role || 'N/A';
     const vaList = (c.voice_actors || [])
-      .map(va => `    🎙️ ${va.person?.name || '?'} (${va.language || '?'})`)
+      .filter(va => VA_LANGUAGES.includes(va.language))
+      .map(va => `    🎙️ ${va.person?.name || '?'} (${va.language})`)
       .join('\n');
 
     text += `\n${idx + 1}. *${charName}* [${role}]\n`;
@@ -248,13 +312,18 @@ function buildStaffText(staff) {
   return text;
 }
 
+// total = the anime's real episode count (null while it is still airing / unknown)
 function buildEpisodesText(episodes, total, hasNext, title) {
   if (!episodes || episodes.length === 0) {
     return `📃 *EPISODES — ${title}*\n━━━━━━━━━━━━━━━━━━━━\n❌ No episode data available.`;
   }
 
+  const totalLabel = Number.isFinite(total) && total > 0
+    ? String(total)
+    : (hasNext ? `${episodes.length}+` : String(episodes.length));
+
   let text = `📃 *EPISODES — ${title}*\n`;
-  text += `Total: ${total} episodes${hasNext ? ' (showing first page)' : ''}\n━━━━━━━━━━━━━━━━━━━━\n`;
+  text += `Total: ${totalLabel} episodes${hasNext ? ' (showing first page)' : ''}\n━━━━━━━━━━━━━━━━━━━━\n`;
 
   episodes.slice(0, 30).forEach(ep => {
     const aired = ep.aired ? new Date(ep.aired).toLocaleDateString() : 'N/A';
@@ -283,375 +352,415 @@ cmd({
   react: "🎌"
 }, async (conn, mek, m, { from, reply, q }) => {
   globalConn = conn;
+  ensureListener(conn);   // (re)binds the listener whenever the socket object changes (reconnects)
   const query = q;
 
   if (!query) return reply('Please provide an anime name.\nExample: .aniinfo Naruto');
 
   try {
-    if (aniInfoSessions[from]) {
-      if (aniInfoSessions[from].timeout) clearTimeout(aniInfoSessions[from].timeout);
-      delete aniInfoSessions[from];
-    }
+    endSession(from);     // drop any old menu in this chat (and its timer)
 
-    aniInfoSessions[from] = { step: 'select_server', query };
+    aniInfoSessions[from] = {
+      step: 'select_server',
+      query,
+      triggerId: mek?.key?.id,        // the message that opened the menu is never an answer to it
+      sender: senderOf(mek?.key)      // in groups only this person can answer
+    };
     resetSessionTimeout(from);
 
     await simulateTyping(conn, from, randomDelay(1200, 2000));
 
-    await sendQuickButtons(
-      conn, from, mek,
-      `🔍 *Search:* ${query}\n\nSelect a server:`,
-      '📚 S1 = MAL (Basic)\n🎬 S2 = Bilibili (Video)\n🌸 S3 = Jikan (Full + Episodes + Characters + Staff + 18+)',
-      [
-        { text: '📚 Server 1 (MAL)', id: 'server_1' },
-        { text: '🎬 Server 2 (Bilibili)', id: 'server_2' },
-        { text: '🌸 Server 3 (Jikan Full)', id: 'server_3' }
-      ]
-    );
+    await sendServerMenu(conn, from, mek, `🔍 *Search:* ${query}\n\nSelect a server:`);
   } catch (error) {
     console.error('[ANIINFO] Command error:', error);
     reply('❌ Something went wrong.');
-    if (aniInfoSessions[from]) delete aniInfoSessions[from];
+    endSession(from);
   }
 });
 
 // ============================================================
 // Listener
 // ============================================================
-if (!global._aniInfoListenerAttached) {
-  global._aniInfoListenerAttached = true;
 
-  const attachAniInfoListener = () => {
-    if (!globalConn) { setTimeout(attachAniInfoListener, 1000); return; }
+// One listener for the whole process. It follows the CURRENT socket: when the bot reconnects
+// (new socket object) or this plugin is reloaded, the old listener is removed and a new one is bound.
+function ensureListener(conn) {
+  const cur = global._aniInfoListener;
+  if (cur && cur.conn === conn && cur.handler === onUpsert) return;
+  if (cur) { try { cur.conn.ev.off('messages.upsert', cur.handler); } catch (e) {} }
+  conn.ev.on('messages.upsert', onUpsert);
+  global._aniInfoListener = { conn, handler: onUpsert };
+}
 
-    globalConn.ev.on('messages.upsert', async (m) => {
+async function onUpsert(m) {
+  for (const msg of (m?.messages || [])) {
+    try {
+      await handleIncoming(m.type, msg);
+    } catch (err) {
+      console.error('[ANIINFO] Listener error:', err);
+    }
+  }
+}
+
+async function handleIncoming(type, msg) {
+  if (!msg || !msg.message || !msg.key) return;
+
+  // The bot's own sends are echoed back as type 'append'. Only the owner typing on their phone arrives as 'notify'.
+  if (msg.key.fromMe && type !== 'notify') return;
+
+  const from = msg.key.remoteJid;
+  const session = aniInfoSessions[from];
+  if (!session) return;
+
+  // The message that opened the menu is not an answer to it
+  if (session.triggerId && msg.key.id === session.triggerId) return;
+
+  // In groups only the person who opened the menu can answer it
+  if (isGroupJid(from) && !sameSender(session.sender, senderOf(msg.key))) return;
+
+  const inner = msg.message?.viewOnceMessage?.message || msg.message?.viewOnceMessageV2?.message ||
+                msg.message?.ephemeralMessage?.message || msg.message;
+  const textMsg = (inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || '').trim();
+
+  let listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
+               inner.templateButtonReplyMessage?.selectedId ||
+               inner.buttonsResponseMessage?.selectedButtonId || null;
+  if (!listId) {
+    const pj = inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+               inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
+    if (pj) {
       try {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-        const from = msg.key.remoteJid;
-        const session = aniInfoSessions[from];
-        if (!session) return;
+        const p = typeof pj === 'string' ? JSON.parse(pj) : pj;
+        listId = p.id || p.selectedId || p.selected_id || null;
+      } catch (e) {}
+    }
+  }
 
-        const inner = msg.message?.viewOnceMessage?.message || msg.message?.viewOnceMessageV2?.message ||
-                      msg.message?.ephemeralMessage?.message || msg.message;
-        const textMsg = (inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || '').trim();
+  // Ignore stickers/images/etc. and other commands (".aniinfo bleach", "!menu" ...): valid answers never start with a symbol
+  if (!listId && (!textMsg || /^[^\p{L}\p{N}]/u.test(textMsg))) return;
 
-        let listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
-                     inner.templateButtonReplyMessage?.selectedId ||
-                     inner.buttonsResponseMessage?.selectedButtonId || null;
-        if (!listId) {
-          const pj = inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
-                     inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
-          if (pj) {
-            try {
-              const p = typeof pj === 'string' ? JSON.parse(pj) : pj;
-              listId = p.id || p.selectedId || p.selected_id || null;
-            } catch (e) {}
-          }
-        }
+  // Global cancel
+  if (listId === 'close' || textMsg.toLowerCase() === 'cancel' || textMsg === '0') {
+    endSession(from);
+    await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
+    return;
+  }
 
-        // Global cancel
-        if (listId === 'close' || textMsg.toLowerCase() === 'cancel' || textMsg === '0') {
-          if (session.timeout) clearTimeout(session.timeout);
-          await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-          delete aniInfoSessions[from];
-          return;
-        }
+  try {
+    await runStep(session, from, msg, listId, textMsg);
+  } catch (err) {
+    console.error('[ANIINFO] Step error:', err);
+    // never leave the user waiting on a half-finished step
+    if (aniInfoSessions[from] === session && TRANSIENT_STEPS.includes(session.step)) {
+      endSession(from);
+      try {
+        await globalConn.sendMessage(from, { text: '❌ Something went wrong. Please run the command again.' }, { quoted: msg });
+      } catch (e) { /* connection problem: nothing more we can do */ }
+    }
+  }
+}
 
-        // --------------------------------------------------
-        // STEP 1: Server Selection
-        // --------------------------------------------------
-        if (session.step === 'select_server') {
-          let server = null;
-          if (listId === 'server_1' || textMsg === '1') server = 1;
-          else if (listId === 'server_2' || textMsg === '2') server = 2;
-          else if (listId === 'server_3' || textMsg === '3') server = 3;
+async function runStep(session, from, msg, listId, textMsg) {
+  // --------------------------------------------------
+  // STEP 1: Server Selection
+  // --------------------------------------------------
+  if (session.step === 'select_server') {
+    let server = null;
+    if (listId === 'server_1' || textMsg === '1') server = 1;
+    else if (listId === 'server_2' || textMsg === '2') server = 2;
+    else if (listId === 'server_3' || textMsg === '3') server = 3;
 
-          if (!server) {
-            await globalConn.sendMessage(from, { text: '❌ Please select Server 1, 2 or 3.' }, { quoted: msg });
-            return;
-          }
+    if (!server) {
+      await globalConn.sendMessage(from, { text: '❌ Please select Server 1, 2 or 3.' }, { quoted: msg });
+      return;
+    }
 
-          session.server = server;
-          session.step = 'searching';
-          resetSessionTimeout(from);
+    session.server = server;
+    session.step = 'searching';
+    resetSessionTimeout(from);
 
-          await simulateTyping(globalConn, from, randomDelay(1500, 2500));
+    await simulateTyping(globalConn, from, randomDelay(1500, 2500));
 
-          // Server 3 uses sfw=false → includes 18+ (Hentai/Rx)
-          const apiUrl = server === 1
-            ? `https://api-nomo.zone.id/api/animesearch?q=${encodeURIComponent(session.query)}`
-            : server === 2
-            ? `https://api-nomo.zone.id/api/anisearch?q=${encodeURIComponent(session.query)}`
-            : `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(session.query)}&sfw=false&limit=10`;
+    // Server 3 uses sfw=false → includes 18+ (Hentai/Rx)
+    const apiUrl = server === 1
+      ? `https://api-nomo.zone.id/api/animesearch?q=${encodeURIComponent(session.query)}`
+      : server === 2
+      ? `https://api-nomo.zone.id/api/anisearch?q=${encodeURIComponent(session.query)}`
+      : `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(session.query)}&sfw=false&limit=10`;
 
-          const res = await axios.get(apiUrl, { timeout: 15000 });
+    let results;
+    try {
+      const res = await axios.get(apiUrl, { timeout: 15000 });
+      const raw = server === 3 ? res.data?.data : (res.data?.status ? res.data.result : []);
+      results = Array.isArray(raw) ? raw.filter(r => r && typeof r === 'object') : [];
+    } catch (err) {
+      console.error(`[ANIINFO] Server ${server} search error:`, err.message);
+      if (aniInfoSessions[from] !== session) return;
+      // keep the session: the user can retry or pick another server right away
+      session.step = 'select_server';
+      resetSessionTimeout(from);
+      await sendServerMenu(globalConn, from, msg,
+        `❌ *Server ${server}* did not respond.\n\n🔍 *Search:* ${session.query}\n\nTry again or pick another server:`);
+      return;
+    }
 
-          let results = [];
-          if (server === 3) {
-            results = res.data?.data || [];
-          } else {
-            results = res.data?.status && Array.isArray(res.data.result) ? res.data.result : [];
-          }
+    // the menu may have been closed (or replaced) while we were waiting for the API
+    if (aniInfoSessions[from] !== session) return;
 
-          if (results.length === 0) {
-            await globalConn.sendMessage(from, { text: '❌ No results found.' }, { quoted: msg });
-            delete aniInfoSessions[from];
-            return;
-          }
+    if (results.length === 0) {
+      endSession(from);
+      await globalConn.sendMessage(from, { text: '❌ No results found.' }, { quoted: msg });
+      return;
+    }
 
-          results = results.slice(0, 10);
-          session.results = results;
-          session.step = 'select_anime';
-          resetSessionTimeout(from);
+    results = results.slice(0, 10);
 
-          let body = `🔍 *Results for "${session.query}"* (Server ${server})\n\n`;
-          results.forEach((item, i) => {
-            const title = item.title_english || item.title || 'Unknown';
-            const ratingTag = item.rating && (item.rating.includes('Rx') || item.rating.includes('R+'))
-              ? ' 🔞' : '';
-            body += `${i + 1} | ${title}${ratingTag}\n`;
-          });
-          body += `\n0 | ❌ Close`;
-
-          const sections = [{
-            title: `Server ${server} Results`,
-            rows: results.map((item, i) => {
-              const ratingTag = item.rating && (item.rating.includes('Rx') || item.rating.includes('R+'))
-                ? ' 🔞' : '';
-              return {
-                title: `${i + 1} | ${item.title_english || item.title}${ratingTag}`,
-                description: server === 1
-                  ? `${item.type || 'Anime'} | ⭐ ${item.score || 'N/A'}`
-                  : server === 2
-                  ? `${item.duration || ''} | ${item.author || ''}`
-                  : `${item.type || 'Anime'} | ⭐ ${item.score || 'N/A'} | ${item.episodes || '?'} eps`,
-                id: `ani_${i}`
-              };
-            })
-          }];
-          sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close', id: 'close' });
-
-          const thumb = server === 1
-            ? (results[0].imageUrl || null)
-            : server === 2
-            ? (results[0].thumbnail || null)
-            : (results[0].images?.jpg?.large_image_url || results[0].images?.jpg?.image_url || null);
-
-          await sendInteractiveList(globalConn, from, msg, 'Select Anime', body,
-            'Tap a result or reply with a number', sections, thumb);
-          return;
-        }
-
-        // --------------------------------------------------
-        // STEP 2: Anime Selected → Show Details
-        // --------------------------------------------------
-        if (session.step === 'select_anime') {
-          let selection = null;
-
-          if (listId && listId.startsWith('ani_')) {
-            const idx = parseInt(listId.split('_')[1]);
-            if (!isNaN(idx) && idx >= 0 && idx < session.results.length) selection = idx;
-          }
-          if (selection === null && textMsg !== '') {
-            const match = textMsg.match(/^(\d+)/);
-            if (match) {
-              const num = parseInt(match[1]);
-              if (num >= 1 && num <= session.results.length) selection = num - 1;
-            }
-          }
-          if (selection === null || !session.results[selection]) return;
-
-          const item = session.results[selection];
-          session.mediaTitle = item.title_english || item.title;
-          session.step = 'show_details';
-          resetSessionTimeout(from);
-
-          await simulateTyping(globalConn, from, randomDelay(1500, 2500));
-
-          // ----------------------------------------------
-          // Server 1 & 2
-          // ----------------------------------------------
-          if (session.server !== 3) {
-            let infoText = '';
-            let posterUrl = null;
-
-            if (session.server === 1) {
-              const desc = item.description
-                ? (item.description.length > 300 ? item.description.substring(0, 300) + '...' : item.description)
-                : 'No description available.';
-              infoText = `🎌 *${item.title}*\n📺 *Type:* ${item.type || 'N/A'}\n🎞️ *Episodes:* ${item.episodes || 'N/A'}\n⭐ *Score:* ${item.score || 'N/A'}\n🔗 *Link:* ${item.link || 'N/A'}\n\n📝 *Description:*\n${desc}`;
-              posterUrl = item.imageUrl || null;
-            } else {
-              infoText = `🎬 *${item.title}*\n👁️ *Views:* ${item.views || 'N/A'}\n⏱️ *Duration:* ${item.duration || 'N/A'}\n👤 *Author:* ${item.author || 'N/A'}\n🔗 *URL:* ${item.url || 'N/A'}`;
-              posterUrl = item.thumbnail || null;
-            }
-
-            session.posterUrl = posterUrl;
-            session.step = 'ask_poster';
-
-            await sendQuickButtons(globalConn, from, msg, infoText, 'Do you want the poster?', [
-              { text: '🖼️ Yes, send poster', id: 'poster_yes' },
-              { text: '❌ No, thanks', id: 'poster_no' }
-            ]);
-            return;
-          }
-
-          // ----------------------------------------------
-          // Server 3 (Jikan) — FULL details
-          // ----------------------------------------------
-          const malId = item.mal_id;
-          if (!malId) {
-            await globalConn.sendMessage(from, { text: '❌ Invalid MAL ID.' }, { quoted: msg });
-            delete aniInfoSessions[from];
-            return;
-          }
-
-          try {
-            const fullData = await fetchJikanFullDetails(malId);
-            if (!fullData) throw new Error('No full data');
-
-            session.fullData = fullData;
-            session.posterUrl = fullData.images?.jpg?.large_image_url || fullData.images?.jpg?.image_url || null;
-            session.malId = malId;
-
-            // Send INFORMATION + SYNOPSIS
-            const infoText = buildInfoText(fullData);
-            await globalConn.sendMessage(from, { text: infoText }, { quoted: msg });
-
-            // Action buttons
-            await sendQuickButtons(
-              globalConn, from, msg,
-              '✅ *Information & Synopsis delivered.*\n\nWhat would you like next?',
-              'Choose below:',
-              [
-                { text: '📃 Full Info & Episodes', id: 'show_full' },
-                { text: '🖼️ Send Poster', id: 'poster_yes' },
-                { text: '❌ Close', id: 'poster_no' }
-              ]
-            );
-            session.step = 'details_actions';
-            resetSessionTimeout(from);
-          } catch (err) {
-            console.error('[ANIINFO] Jikan full details error:', err.message);
-            await globalConn.sendMessage(from, { text: '❌ Failed to load full details.' }, { quoted: msg });
-            delete aniInfoSessions[from];
-          }
-          return;
-        }
-
-        // --------------------------------------------------
-        // STEP 3: Details Actions (Server 3)
-        // --------------------------------------------------
-        if (session.step === 'details_actions') {
-          // -------- FULL INFO + CHARACTERS + STAFF + EPISODES --------
-          if (listId === 'show_full' || textMsg === '1') {
-            const malId = session.malId;
-            const title = session.mediaTitle;
-
-            await simulateTyping(globalConn, from, randomDelay(1500, 2000));
-
-            try {
-              // Characters
-              await sleep(800);
-              const characters = await fetchJikanCharacters(malId);
-
-              // Staff
-              await sleep(800);
-              const staff = await fetchJikanStaff(malId);
-
-              // Episodes
-              await sleep(800);
-              const { episodes, hasNext, total } = await fetchJikanEpisodes(malId, 1);
-
-              // Send CHARACTERS
-              const charText = buildCharactersText(characters);
-              await globalConn.sendMessage(from, { text: charText }, { quoted: msg });
-              await sleep(700);
-
-              // Send STAFF
-              const staffText = buildStaffText(staff);
-              await globalConn.sendMessage(from, { text: staffText }, { quoted: msg });
-              await sleep(700);
-
-              // Send EPISODES
-              const epText = buildEpisodesText(episodes, total, hasNext, title);
-              await globalConn.sendMessage(from, { text: epText }, { quoted: msg });
-
-              // Poster / Close
-              await sendQuickButtons(
-                globalConn, from, msg,
-                '✅ *All data delivered!*',
-                'What next?',
-                [
-                  { text: '🖼️ Send Poster', id: 'poster_yes' },
-                  { text: '❌ Close', id: 'poster_no' }
-                ]
-              );
-              session.step = 'ask_poster';
-              resetSessionTimeout(from);
-            } catch (err) {
-              console.error('[ANIINFO] Full info fetch error:', err.message);
-              await globalConn.sendMessage(from, {
-                text: '❌ Failed to load some data. Please try again.\n(Jikan API rate limit: 3 req/sec)'
-              }, { quoted: msg });
-            }
-            return;
-          }
-
-          // -------- POSTER --------
-          if (listId === 'poster_yes' || textMsg === '2') {
-            if (session.posterUrl) {
-              await globalConn.sendMessage(from, {
-                image: { url: session.posterUrl },
-                caption: `🖼️ *${session.mediaTitle}* Poster`
-              }, { quoted: msg });
-            } else {
-              await globalConn.sendMessage(from, { text: '❌ No poster available.' }, { quoted: msg });
-            }
-            await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
-            delete aniInfoSessions[from];
-            return;
-          }
-
-          // -------- CLOSE --------
-          if (listId === 'poster_no' || textMsg === '3') {
-            await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
-            delete aniInfoSessions[from];
-            return;
-          }
-
-          await globalConn.sendMessage(from, { text: '❌ Please use the buttons.' }, { quoted: msg });
-          return;
-        }
-
-        // --------------------------------------------------
-        // STEP 4: Poster Confirmation (Server 1/2)
-        // --------------------------------------------------
-        if (session.step === 'ask_poster') {
-          if (listId === 'poster_yes' || textMsg.toLowerCase().includes('yes') || textMsg === '1') {
-            if (session.posterUrl) {
-              await globalConn.sendMessage(from, {
-                image: { url: session.posterUrl },
-                caption: `🖼️ *${session.mediaTitle}* Poster`
-              }, { quoted: msg });
-            } else {
-              await globalConn.sendMessage(from, { text: '❌ No poster available.' }, { quoted: msg });
-            }
-            delete aniInfoSessions[from];
-          } else if (listId === 'poster_no' || textMsg.toLowerCase().includes('no') || textMsg === '0' || textMsg === '2') {
-            await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
-            delete aniInfoSessions[from];
-          } else {
-            await globalConn.sendMessage(from, { text: '❌ Please choose (1 = Yes / 2 = No).' }, { quoted: msg });
-          }
-          return;
-        }
-
-      } catch (err) {
-        console.error('[ANIINFO] Listener error:', err);
-      }
+    // build everything first: if this throws, the step is still "searching" and the safety net tells the user
+    let body = `🔍 *Results for "${session.query}"* (Server ${server})\n\n`;
+    results.forEach((item, i) => {
+      const title = item.title_english || item.title || 'Unknown';
+      const ratingTag = item.rating && (item.rating.includes('Rx') || item.rating.includes('R+'))
+        ? ' 🔞' : '';
+      body += `${i + 1} | ${title}${ratingTag}\n`;
     });
-  };
-  attachAniInfoListener();
+    body += `\n0 | ❌ Close`;
+
+    const sections = [{
+      title: `Server ${server} Results`,
+      rows: results.map((item, i) => {
+        const ratingTag = item.rating && (item.rating.includes('Rx') || item.rating.includes('R+'))
+          ? ' 🔞' : '';
+        return {
+          title: `${i + 1} | ${item.title_english || item.title}${ratingTag}`,
+          description: server === 1
+            ? `${item.type || 'Anime'} | ⭐ ${item.score || 'N/A'}`
+            : server === 2
+            ? `${item.duration || ''} | ${item.author || ''}`
+            : `${item.type || 'Anime'} | ⭐ ${item.score || 'N/A'} | ${item.episodes || '?'} eps`,
+          id: `ani_${i}`
+        };
+      })
+    }];
+    sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close', id: 'close' });
+
+    const thumb = server === 1
+      ? (results[0].imageUrl || null)
+      : server === 2
+      ? (results[0].thumbnail || null)
+      : (results[0].images?.jpg?.large_image_url || results[0].images?.jpg?.image_url || null);
+
+    session.results = results;
+    session.step = 'select_anime';
+    resetSessionTimeout(from);
+
+    await sendInteractiveList(globalConn, from, msg, 'Select Anime', body,
+      'Tap a result or reply with a number', sections, thumb);
+    return;
+  }
+
+  // --------------------------------------------------
+  // STEP 2: Anime Selected → Show Details
+  // --------------------------------------------------
+  if (session.step === 'select_anime') {
+    let selection = null;
+
+    if (listId && listId.startsWith('ani_')) {
+      const idx = parseInt(listId.split('_')[1]);
+      if (!isNaN(idx) && idx >= 0 && idx < session.results.length) selection = idx;
+    }
+    if (selection === null && textMsg !== '') {
+      const match = textMsg.match(/^(\d+)/);
+      if (match) {
+        const num = parseInt(match[1]);
+        if (num >= 1 && num <= session.results.length) selection = num - 1;
+      }
+    }
+    if (selection === null || !session.results[selection]) return;
+
+    const item = session.results[selection];
+    session.mediaTitle = item.title_english || item.title;
+    session.step = 'show_details';
+    resetSessionTimeout(from);
+
+    await simulateTyping(globalConn, from, randomDelay(1500, 2500));
+
+    // ----------------------------------------------
+    // Server 1 & 2
+    // ----------------------------------------------
+    if (session.server !== 3) {
+      let infoText = '';
+      let posterUrl = null;
+
+      if (session.server === 1) {
+        const desc = item.description
+          ? (item.description.length > 300 ? item.description.substring(0, 300) + '...' : item.description)
+          : 'No description available.';
+        infoText = `🎌 *${item.title}*\n📺 *Type:* ${item.type || 'N/A'}\n🎞️ *Episodes:* ${item.episodes || 'N/A'}\n⭐ *Score:* ${item.score || 'N/A'}\n🔗 *Link:* ${item.link || 'N/A'}\n\n📝 *Description:*\n${desc}`;
+        posterUrl = item.imageUrl || null;
+      } else {
+        infoText = `🎬 *${item.title}*\n👁️ *Views:* ${item.views || 'N/A'}\n⏱️ *Duration:* ${item.duration || 'N/A'}\n👤 *Author:* ${item.author || 'N/A'}\n🔗 *URL:* ${item.url || 'N/A'}`;
+        posterUrl = item.thumbnail || null;
+      }
+
+      session.posterUrl = posterUrl;
+      session.step = 'ask_poster';
+
+      await sendQuickButtons(globalConn, from, msg, infoText, 'Do you want the poster?', [
+        { text: '🖼️ Yes, send poster', id: 'poster_yes' },
+        { text: '❌ No, thanks', id: 'poster_no' }
+      ]);
+      return;
+    }
+
+    // ----------------------------------------------
+    // Server 3 (Jikan) — FULL details
+    // ----------------------------------------------
+    const malId = item.mal_id;
+    if (!malId) {
+      endSession(from);
+      await globalConn.sendMessage(from, { text: '❌ Invalid MAL ID.' }, { quoted: msg });
+      return;
+    }
+
+    try {
+      const fullData = await fetchJikanFullDetails(malId);
+      if (!fullData) throw new Error('No full data');
+      if (aniInfoSessions[from] !== session) return;   // closed while loading
+
+      session.fullData = fullData;
+      session.posterUrl = fullData.images?.jpg?.large_image_url || fullData.images?.jpg?.image_url || null;
+      session.malId = malId;
+      session.step = 'details_actions';
+      resetSessionTimeout(from);
+
+      // Send INFORMATION + SYNOPSIS
+      await globalConn.sendMessage(from, { text: buildInfoText(fullData) }, { quoted: msg });
+
+      // Action buttons
+      await sendQuickButtons(
+        globalConn, from, msg,
+        '✅ *Information & Synopsis delivered.*\n\nWhat would you like next?',
+        'Choose below:',
+        [
+          { text: '📃 Full Info & Episodes', id: 'show_full' },
+          { text: '🖼️ Send Poster', id: 'poster_yes' },
+          { text: '❌ Close', id: 'poster_no' }
+        ]
+      );
+    } catch (err) {
+      console.error('[ANIINFO] Jikan full details error:', err.message);
+      if (aniInfoSessions[from] !== session) return;
+      // keep the session: tapping a result again retries
+      session.step = 'select_anime';
+      resetSessionTimeout(from);
+      await globalConn.sendMessage(from, { text: '❌ Failed to load full details. Tap a result again to retry.' }, { quoted: msg });
+    }
+    return;
+  }
+
+  // --------------------------------------------------
+  // STEP 3: Details Actions (Server 3)
+  // --------------------------------------------------
+  if (session.step === 'details_actions') {
+    // -------- FULL INFO + CHARACTERS + STAFF + EPISODES --------
+    if (listId === 'show_full' || textMsg === '1') {
+      const malId = session.malId;
+      const title = session.mediaTitle;
+      const total = session.fullData?.episodes ?? null;
+
+      session.step = 'loading_full';   // lock: a second tap while loading is ignored
+      resetSessionTimeout(from);
+
+      try {
+        await simulateTyping(globalConn, from, randomDelay(1500, 2000));
+
+        // Characters
+        await sleep(800);
+        const characters = await fetchJikanCharacters(malId);
+
+        // Staff
+        await sleep(800);
+        const staff = await fetchJikanStaff(malId);
+
+        // Episodes
+        await sleep(800);
+        const { episodes, hasNext } = await fetchJikanEpisodes(malId, 1);
+
+        if (aniInfoSessions[from] !== session) return;   // closed while loading
+
+        // Send CHARACTERS
+        await globalConn.sendMessage(from, { text: buildCharactersText(characters) }, { quoted: msg });
+        await sleep(700);
+
+        // Send STAFF
+        await globalConn.sendMessage(from, { text: buildStaffText(staff) }, { quoted: msg });
+        await sleep(700);
+
+        // Send EPISODES
+        await globalConn.sendMessage(from, { text: buildEpisodesText(episodes, total, hasNext, title) }, { quoted: msg });
+
+        // Poster / Close
+        session.step = 'ask_poster';
+        resetSessionTimeout(from);
+        await sendQuickButtons(
+          globalConn, from, msg,
+          '✅ *All data delivered!*',
+          'What next?',
+          [
+            { text: '🖼️ Send Poster', id: 'poster_yes' },
+            { text: '❌ Close', id: 'poster_no' }
+          ]
+        );
+      } catch (err) {
+        console.error('[ANIINFO] Full info fetch error:', err.message);
+        if (aniInfoSessions[from] !== session) return;
+        session.step = 'details_actions';   // unlock so the user can retry
+        resetSessionTimeout(from);
+        await globalConn.sendMessage(from, {
+          text: '❌ Failed to load some data. Please try again.\n(Jikan API rate limit: 3 req/sec)'
+        }, { quoted: msg });
+      }
+      return;
+    }
+
+    // -------- POSTER --------
+    if (listId === 'poster_yes' || textMsg === '2') {
+      const { posterUrl, mediaTitle } = session;
+      endSession(from);   // end first, so a double tap cannot send the poster twice
+      await sendPoster(globalConn, from, msg, posterUrl, mediaTitle);
+      await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
+      return;
+    }
+
+    // -------- CLOSE --------
+    if (listId === 'poster_no' || textMsg === '3') {
+      endSession(from);
+      await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
+      return;
+    }
+
+    await globalConn.sendMessage(from, { text: '❌ Please use the buttons.' }, { quoted: msg });
+    return;
+  }
+
+  // --------------------------------------------------
+  // STEP 4: Poster Confirmation (Server 1/2, and after "Full Info")
+  // --------------------------------------------------
+  if (session.step === 'ask_poster') {
+    // exact answers only: free text such as "death note" must not count as "no"
+    const yes = listId === 'poster_yes' || /^(y|yes|1)$/i.test(textMsg);
+    const no = listId === 'poster_no' || /^(n|no|2)$/i.test(textMsg);
+
+    if (yes) {
+      const { posterUrl, mediaTitle } = session;
+      endSession(from);
+      await sendPoster(globalConn, from, msg, posterUrl, mediaTitle);
+    } else if (no) {
+      endSession(from);
+      await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
+    } else {
+      await globalConn.sendMessage(from, { text: '❌ Please choose (1 = Yes / 2 = No).' }, { quoted: msg });
+    }
+    return;
+  }
 }
