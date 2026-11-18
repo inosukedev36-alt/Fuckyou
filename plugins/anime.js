@@ -6,13 +6,13 @@ const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('
 // Global Variables & Sessions
 // ============================================================
 let globalConn = null;
-const animeSessions = {};
-global._animeSessions = animeSessions;
+const aniInfoSessions = {};
+global._aniInfoSessions = aniInfoSessions;
 
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ============================================================
-// Antiban Helper Functions
+// Antiban Helpers
 // ============================================================
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
@@ -26,19 +26,19 @@ async function simulateTyping(conn, from, durationMs) {
 }
 
 function resetSessionTimeout(from) {
-  const s = animeSessions[from];
+  const s = aniInfoSessions[from];
   if (!s) return;
   if (s.timeout) clearTimeout(s.timeout);
   s.timeout = setTimeout(() => {
-    if (animeSessions[from]) {
-      delete animeSessions[from];
-      console.log(`[ANIME] Session expired for ${from}`);
+    if (aniInfoSessions[from]) {
+      delete aniInfoSessions[from];
+      console.log(`[ANIINFO] Session expired for ${from}`);
     }
   }, SESSION_TIMEOUT_MS);
 }
 
 // ============================================================
-// Interactive List & Button Helpers
+// Interactive Helpers
 // ============================================================
 async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, footerText, sections, imageUrl = null) {
   try {
@@ -93,13 +93,13 @@ async function sendQuickButtons(conn, from, mek, bodyText, footerText, buttons) 
 }
 
 // ============================================================
-// Send Poster (only if user says yes)
+// Poster Sender
 // ============================================================
-async function sendPoster(conn, from, session, quotedMsg) {
+async function sendAniInfoPoster(conn, from, session, quotedMsg) {
   const { posterUrl, mediaTitle } = session;
   if (!posterUrl) {
     await conn.sendMessage(from, { text: '❌ No poster available for this title.' }, { quoted: quotedMsg });
-    delete animeSessions[from];
+    delete aniInfoSessions[from];
     return;
   }
   try {
@@ -111,98 +111,81 @@ async function sendPoster(conn, from, session, quotedMsg) {
     console.error('Poster send error:', e.message);
     await conn.sendMessage(from, { text: '❌ Failed to send poster.' }, { quoted: quotedMsg });
   }
-  delete animeSessions[from];
+  delete aniInfoSessions[from];
 }
 
 // ============================================================
-// Main Command
+// Main Command: .aniinfo
 // ============================================================
 cmd({
-  pattern: "anime",
-  alias: ["mal", "animeinfo"],
-  desc: "Get anime/hentai information from MAL (Jikan API)",
+  pattern: "aniinfo",
+  alias: ["ani"],
+  desc: "Search anime from multiple servers (MAL / Bilibili)",
   category: "download",
   react: "🎌"
 }, async (conn, mek, m, { from, reply, q }) => {
   globalConn = conn;
   const query = q;
-  if (!query) return reply('Please provide an anime name.\nExample: .anime Naruto');
+
+  if (!query) {
+    return reply('Please provide an anime name.\nExample: .aniinfo Naruto');
+  }
 
   try {
-    if (animeSessions[from]) {
-      if (animeSessions[from].timeout) clearTimeout(animeSessions[from].timeout);
-      delete animeSessions[from];
-    }
-    animeSessions[from] = { step: 'search' };
-    resetSessionTimeout(from);
-
-    await simulateTyping(conn, from, randomDelay(1500, 2500));
-
-    // Jikan API - sfw=false ලෙස යැවීමෙන් Hentai/Adult ඒවත් එනවා
-    const searchUrl = `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&sfw=false&limit=10`;
-    const searchRes = await axios.get(searchUrl);
-
-    if (!searchRes.data.data || searchRes.data.data.length === 0) {
-      delete animeSessions[from];
-      return reply('❌ No results found.');
+    // Clear existing session
+    if (aniInfoSessions[from]) {
+      if (aniInfoSessions[from].timeout) clearTimeout(aniInfoSessions[from].timeout);
+      delete aniInfoSessions[from];
     }
 
-    const results = searchRes.data.data;
-    animeSessions[from].results = results;
-    animeSessions[from].step = 'select_anime';
+    // Create new session
+    aniInfoSessions[from] = {
+      step: 'select_server',
+      query: query
+    };
     resetSessionTimeout(from);
 
-    let body = `🔍 Search Results for: ${query}\n\n`;
-    results.forEach((item, i) => {
-      const title = item.title_english || item.title;
-      const year = item.year || 'Unknown';
-      const type = item.type || 'N/A';
-      body += `${i + 1} | ${title} (${year}) - ${type}\n`;
-    });
-    body += `0 | ❌ Close\n\nSelect the correct one.`;
+    await simulateTyping(conn, from, randomDelay(1200, 2000));
 
-    const sections = [{
-      title: 'Search Results',
-      rows: results.map((item, i) => {
-        const title = item.title_english || item.title;
-        const year = item.year || 'Unknown';
-        const type = item.type || 'Anime';
-        return { title: `${i + 1} | ${title} (${year})`, description: type, id: `anime_${i}` };
-      })
-    }];
-    sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
-
-    const imageUrl = results[0].images?.jpg?.large_image_url || results[0].images?.jpg?.image_url || null;
-    await sendInteractiveList(conn, from, mek, 'Select Anime', body, 'Send a number or select from the list', sections, imageUrl);
-
+    await sendQuickButtons(
+      conn, from, mek,
+      `🔍 *Search:* ${query}\n\nSelect a server to search from:`,
+      '📚 Server 1 = MyAnimeList (Anime Info)\n🎬 Server 2 = Bilibili (Videos)',
+      [
+        { text: '📚 Server 1 (MAL)', id: 'server_1' },
+        { text: '🎬 Server 2 (Bilibili)', id: 'server_2' }
+      ]
+    );
   } catch (error) {
-    console.error('Jikan API Error:', error);
-    reply('❌ Something went wrong while searching.');
-    if (animeSessions[from]) delete animeSessions[from];
+    console.error('[ANIINFO] Command error:', error);
+    reply('❌ Something went wrong.');
+    if (aniInfoSessions[from]) delete aniInfoSessions[from];
   }
 });
 
 // ============================================================
 // Listener
 // ============================================================
-if (!global._animeListenerAttached) {
-  global._animeListenerAttached = true;
+if (!global._aniInfoListenerAttached) {
+  global._aniInfoListenerAttached = true;
 
-  const attachListener = () => {
-    if (!globalConn) { setTimeout(attachListener, 1000); return; }
+  const attachAniInfoListener = () => {
+    if (!globalConn) { setTimeout(attachAniInfoListener, 1000); return; }
 
     globalConn.ev.on('messages.upsert', async (m) => {
       try {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
         const from = msg.key.remoteJid;
-        const session = animeSessions[from];
+        const session = aniInfoSessions[from];
         if (!session) return;
 
+        // Extract inner message
         const inner = msg.message?.viewOnceMessage?.message || msg.message?.viewOnceMessageV2?.message ||
                       msg.message?.ephemeralMessage?.message || msg.message;
-        const textMsg = inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || '';
+        const textMsg = (inner.conversation || inner.extendedTextMessage?.text || inner.imageMessage?.caption || '').trim();
 
+        // Extract list/button ID
         let listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
                      inner.templateButtonReplyMessage?.selectedId ||
                      inner.buttonsResponseMessage?.selectedButtonId || null;
@@ -217,22 +200,96 @@ if (!global._animeListenerAttached) {
           }
         }
 
+        // Global cancel
         if (listId === 'close' || textMsg.toLowerCase() === 'cancel' || textMsg === '0') {
           if (session.timeout) clearTimeout(session.timeout);
           await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-          delete animeSessions[from];
+          delete aniInfoSessions[from];
           return;
         }
 
-        // Step: select_anime
+        // --------------------------------------------------------
+        // STEP 1: Server Selection
+        // --------------------------------------------------------
+        if (session.step === 'select_server') {
+          let server = null;
+          if (listId === 'server_1' || textMsg === '1') server = 1;
+          else if (listId === 'server_2' || textMsg === '2') server = 2;
+
+          if (!server) {
+            await globalConn.sendMessage(from, { text: '❌ Please select Server 1 or Server 2.' }, { quoted: msg });
+            return;
+          }
+
+          session.server = server;
+          session.step = 'searching';
+          resetSessionTimeout(from);
+
+          await simulateTyping(globalConn, from, randomDelay(1500, 2500));
+
+          const apiUrl = server === 1
+            ? `https://api-nomo.zone.id/api/animesearch?q=${encodeURIComponent(session.query)}`
+            : `https://api-nomo.zone.id/api/anisearch?q=${encodeURIComponent(session.query)}`;
+
+          const res = await axios.get(apiUrl, { timeout: 15000 });
+
+          if (!res.data?.status || !Array.isArray(res.data.result) || res.data.result.length === 0) {
+            await globalConn.sendMessage(from, { text: '❌ No results found.' }, { quoted: msg });
+            delete aniInfoSessions[from];
+            return;
+          }
+
+          const results = res.data.result.slice(0, 10); // max 10 for buttons
+          session.results = results;
+          session.step = 'select_anime';
+          resetSessionTimeout(from);
+
+          // Build result buttons / list
+          let body = `🔍 *Results for "${session.query}"* (Server ${server})\n\n`;
+          results.forEach((item, i) => {
+            body += `${i + 1} | ${item.title}\n`;
+          });
+          body += `\n0 | ❌ Close`;
+
+          const sections = [{
+            title: `Server ${server} Results`,
+            rows: results.map((item, i) => ({
+              title: `${i + 1} | ${item.title}`,
+              description: server === 1
+                ? `${item.type || 'Anime'} | ⭐ ${item.score || 'N/A'}`
+                : `${item.duration || ''} | ${item.author || ''}`,
+              id: `ani_${i}`
+            }))
+          }];
+          sections[0].rows.push({ title: '0 | ❌ Close', description: 'Close this menu', id: 'close' });
+
+          const thumb = server === 1
+            ? (results[0].imageUrl || null)
+            : (results[0].thumbnail || null);
+
+          await sendInteractiveList(
+            globalConn, from, msg,
+            'Select Anime',
+            body,
+            'Tap a result or reply with a number',
+            sections,
+            thumb
+          );
+          return;
+        }
+
+        // --------------------------------------------------------
+        // STEP 2: Anime Selection → Show Details
+        // --------------------------------------------------------
         if (session.step === 'select_anime') {
           let selection = null;
-          if (listId && listId.startsWith('anime_')) {
+
+          if (listId && listId.startsWith('ani_')) {
             const idx = parseInt(listId.split('_')[1]);
-            if (!isNaN(idx)) selection = idx;
+            if (!isNaN(idx) && idx >= 0 && idx < session.results.length) selection = idx;
           }
-          if (selection === null && textMsg.trim() !== '') {
-            const match = textMsg.trim().match(/^(\d+)/);
+          if (selection === null && textMsg !== '') {
+            const match = textMsg.match(/^(\d+)/);
             if (match) {
               const num = parseInt(match[1]);
               if (num >= 1 && num <= session.results.length) selection = num - 1;
@@ -241,26 +298,39 @@ if (!global._animeListenerAttached) {
           if (selection === null || !session.results[selection]) return;
 
           const item = session.results[selection];
-          const title = item.title_english || item.title;
-          const year = item.year || 'Unknown';
-          const synopsis = item.synopsis ? (item.synopsis.length > 250 ? item.synopsis.substring(0, 250) + '...' : item.synopsis) : 'No synopsis available.';
-          const rating = item.score ? `${item.score}/10` : 'N/A';
-          const episodes = item.episodes || 'N/A';
-          const type = item.type || 'N/A';
-          const posterUrl = item.images?.jpg?.large_image_url || item.images?.jpg?.image_url || null;
-
           session.step = 'ask_poster';
-          session.mediaTitle = title;
-          session.posterUrl = posterUrl;
+          session.mediaTitle = item.title;
           resetSessionTimeout(from);
 
-          await simulateTyping(globalConn, from, randomDelay(2000, 3000));
+          await simulateTyping(globalConn, from, randomDelay(1500, 2500));
 
-          const infoText = `🎌 *${title}* (${year})\n` +
-                           `⭐ *Rating:* ${rating}\n` +
-                           `📺 *Type:* ${type}\n` +
-                           `🎞️ *Episodes:* ${episodes}\n\n` +
-                           `📝 *Synopsis:*\n${synopsis}`;
+          let infoText = '';
+          let posterUrl = null;
+
+          if (session.server === 1) {
+            // Server 1 (MAL) details
+            const desc = item.description
+              ? (item.description.length > 300 ? item.description.substring(0, 300) + '...' : item.description)
+              : 'No description available.';
+
+            infoText = `🎌 *${item.title}*\n` +
+                       `📺 *Type:* ${item.type || 'N/A'}\n` +
+                       `🎞️ *Episodes:* ${item.episodes || 'N/A'}\n` +
+                       `⭐ *Score:* ${item.score || 'N/A'}\n` +
+                       `🔗 *Link:* ${item.link || 'N/A'}\n\n` +
+                       `📝 *Description:*\n${desc}`;
+            posterUrl = item.imageUrl || null;
+          } else {
+            // Server 2 (Bilibili) details
+            infoText = `🎬 *${item.title}*\n` +
+                       `👁️ *Views:* ${item.views || 'N/A'}\n` +
+                       `⏱️ *Duration:* ${item.duration || 'N/A'}\n` +
+                       `👤 *Author:* ${item.author || 'N/A'}\n` +
+                       `🔗 *URL:* ${item.url || 'N/A'}`;
+            posterUrl = item.thumbnail || null;
+          }
+
+          session.posterUrl = posterUrl;
 
           await sendQuickButtons(
             globalConn, from, msg,
@@ -274,23 +344,25 @@ if (!global._animeListenerAttached) {
           return;
         }
 
-        // Step: ask_poster
+        // --------------------------------------------------------
+        // STEP 3: Poster Confirmation
+        // --------------------------------------------------------
         if (session.step === 'ask_poster') {
           if (listId === 'poster_yes' || textMsg.toLowerCase().includes('yes') || textMsg === '1') {
-            await sendPoster(globalConn, from, session, msg);
-          } else if (listId === 'poster_no' || textMsg.toLowerCase().includes('no') || textMsg === '0') {
-            await globalConn.sendMessage(from, { text: '✅ Info delivered. Have a nice day!' }, { quoted: msg });
-            delete animeSessions[from];
+            await sendAniInfoPoster(globalConn, from, session, msg);
+          } else if (listId === 'poster_no' || textMsg.toLowerCase().includes('no') || textMsg === '0' || textMsg === '2') {
+            await globalConn.sendMessage(from, { text: '✅ Done. Have a nice day!' }, { quoted: msg });
+            delete aniInfoSessions[from];
           } else {
-            await globalConn.sendMessage(from, { text: '❌ Please choose using the buttons (or reply 1 / 0).' }, { quoted: msg });
+            await globalConn.sendMessage(from, { text: '❌ Please choose using the buttons (1 = Yes / 2 = No).' }, { quoted: msg });
           }
           return;
         }
 
       } catch (err) {
-        console.error('[ANIME] Listener error:', err);
+        console.error('[ANIINFO] Listener error:', err);
       }
     });
   };
-  attachListener();
+  attachAniInfoListener();
 }
