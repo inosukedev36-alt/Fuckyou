@@ -1,20 +1,11 @@
 // Instagram downloader — /ig <instagram link> (or reply to a message that contains a link)
 //
-// UPDATED: switched to poddax-api.dev endpoint + added interactive buttons.
+// UPDATED: switched to poddax-api.dev endpoint + interactive buttons.
 // No API key needed for this endpoint.
 const { cmd } = require('../command');
 
 const API_URL = 'https://poddax-api.dev/instagram';
 const IG_REGEX = /https?:\/\/(?:www\.)?instagram\.com\/(?:reel|reels|p|tv)\/[^\s]+/i;
-
-// Collect every http(s) link found anywhere inside the API result
-function collectUrls(obj, out = new Set()) {
-    if (!obj) return out;
-    if (typeof obj === 'string') { if (/^https?:\/\//i.test(obj)) out.add(obj); return out; }
-    if (Array.isArray(obj)) { obj.forEach((v) => collectUrls(v, out)); return out; }
-    if (typeof obj === 'object') Object.values(obj).forEach((v) => collectUrls(v, out));
-    return out;
-}
 
 cmd({
     pattern: 'ig',
@@ -45,31 +36,48 @@ async (conn, mek, m, { from, q, prefix }) => {
 
         const mediaUrl = data.url;
         const thumbnail = data.thumbnail;
-        const owner = data.owner || 'unknown';
         const isVideo = /\.mp4(\?|$)/i.test(mediaUrl) || /video/i.test(mediaUrl) ||
-                        !/\.(jpe?g|png|webp)(\?|$)/i.test(mediaUrl); // default assume video if unknown
+                        !/\.(jpe?g|png|webp)(\?|$)/i.test(mediaUrl);
 
-        // Build interactive buttons
-        const buttons = [
-            {
-                buttonId: 'dl_now',
-                buttonText: { displayText: '⬇️ Download Now' },
+        // Quality options — only if API actually provides them
+        const qualities = Array.isArray(data.qualities) ? data.qualities
+                        : Array.isArray(data.links) ? data.links
+                        : [];
+
+        let buttons = [];
+        let qualityMap = {};
+
+        if (qualities.length > 0) {
+            // Build one button per available quality
+            qualities.slice(0, 4).forEach((item, idx) => {
+                const label = item.quality || item.label || item.resolution || `Option ${idx + 1}`;
+                const url = item.url || item.link || item.download_url;
+                if (!url) return;
+                const id = `dl_${idx}`;
+                qualityMap[id] = url;
+                buttons.push({
+                    buttonId: id,
+                    buttonText: { displayText: `⬇️ ${label}` },
+                    type: 1,
+                });
+            });
+        }
+
+        // Fallback: no quality info → just a single Download button
+        if (buttons.length === 0) {
+            buttons = [{
+                buttonId: 'dl_default',
+                buttonText: { displayText: '⬇️ Download' },
                 type: 1,
-            },
-            {
-                buttonId: 'copy_link',
-                buttonText: { displayText: '🔗 Copy Link' },
-                type: 1,
-            },
-        ];
+            }];
+            qualityMap['dl_default'] = mediaUrl;
+        }
 
         const caption =
             `✅ *Instagram Media Found*\n\n` +
-            `👤 Owner: ${owner}\n` +
             `📦 Type: ${isVideo ? 'Video 🎬' : 'Image 🖼️'}\n\n` +
-            `_Tap a button below to get the file or copy the direct link._`;
+            `_Tap the button below to download._`;
 
-        // Send thumbnail + buttons first
         const sent = await conn.sendMessage(from, {
             image: thumbnail ? { url: thumbnail } : undefined,
             caption,
@@ -78,34 +86,25 @@ async (conn, mek, m, { from, q, prefix }) => {
             headerType: 4,
         }, { quoted: mek });
 
-        // Fallback: if buttons aren't supported, send raw link in a follow-up
-        if (!sent || !sent.key) {
-            await conn.sendMessage(from, {
-                text: `📥 *Direct link:*\n${mediaUrl}\n\n_(Buttons not supported on this client — copy the link above.)_`,
-            }, { quoted: mek });
-        }
-
         // Handle button replies
         const handler = async (event) => {
             try {
                 const btn = event?.messages?.[0]?.message?.buttonsResponseMessage;
                 if (!btn) return;
                 const id = btn.selectedButtonId;
-                if (id === 'dl_now') {
-                    if (isVideo) {
-                        await conn.sendMessage(from, {
-                            video: { url: mediaUrl },
-                            caption: '✅ Instagram video downloaded',
-                        }, { quoted: mek });
-                    } else {
-                        await conn.sendMessage(from, {
-                            image: { url: mediaUrl },
-                            caption: '✅ Instagram image downloaded',
-                        }, { quoted: mek });
-                    }
-                } else if (id === 'copy_link') {
+                const chosenUrl = qualityMap[id];
+                if (!chosenUrl) return;
+
+                const videoLike = /\.mp4(\?|$)/i.test(chosenUrl) || isVideo;
+                if (videoLike) {
                     await conn.sendMessage(from, {
-                        text: `🔗 *Direct download link:*\n${mediaUrl}`,
+                        video: { url: chosenUrl },
+                        caption: '✅ Instagram video downloaded',
+                    }, { quoted: mek });
+                } else {
+                    await conn.sendMessage(from, {
+                        image: { url: chosenUrl },
+                        caption: '✅ Instagram image downloaded',
                     }, { quoted: mek });
                 }
             } catch (e) {
@@ -115,10 +114,13 @@ async (conn, mek, m, { from, q, prefix }) => {
 
         if (conn.ev && conn.ev.on) {
             conn.ev.on('messages.upsert', handler);
-            // Auto-detach after 5 minutes to avoid listener leak
             setTimeout(() => {
                 try { conn.ev.off('messages.upsert', handler); } catch (_) {}
             }, 5 * 60 * 1000);
+        }
+
+        if (!sent || !sent.key) {
+            await say('❌ Failed to send media preview.');
         }
 
     } catch (err) {
