@@ -71,15 +71,24 @@ async function cleanupSession(conn, from, session) {
 }
 
 // ============================================================
-// Helper: Loading Bar (10 blocks, only •, no percentage)
+// Helper: Loading Bar (░ වලින් පිරෙනවා, 100% උනාම █ වලට මාරු වෙනවා)
 // ============================================================
 async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
   let loadingKey = null;
   let percent = 0;
 
-  function getBarText(p) {
-    const filled = Math.min(10, Math.floor(p / 10));
-    return '•'.repeat(filled) + '\u00A0'.repeat(10 - filled);
+  function getBarText(p, isDone = false) {
+    const totalBlocks = 20;
+    
+    // Done උනාම ඔක්කොම █ වලට මාරු වෙනවා
+    if (isDone) {
+      return '█'.repeat(totalBlocks);
+    }
+    
+    // පිරෙන කොටස ░ වලින්, හිස් තැන් space වලින් (10% = 2 blocks)
+    const filled = Math.min(totalBlocks, Math.floor(p / 5));
+    const empty = totalBlocks - filled;
+    return '░'.repeat(filled) + '\u00A0'.repeat(empty);
   }
 
   try {
@@ -113,8 +122,9 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
       clearInterval(interval);
       try {
         if (loadingKey) {
+          // 100% Done: ඔක්කොම █ වලට මාරු වෙනවා
           await conn.sendMessage(from, { 
-            text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(100)}\n✅ Done!`, 
+            text: `📥 Downloading: ${title}\n📦 ${subtitle}\n\n${getBarText(100, true)}\n✅ Done!`, 
             edit: loadingKey 
           });
           await sleep(1000);
@@ -129,15 +139,9 @@ async function startLoading(conn, from, quotedMsg, title, subtitle, session) {
 // Helper: Filename Builder (Spaces support & Sub-Eng removal)
 // ============================================================
 function buildFileName(title, customTag) {
-  // 1. [Sub-ENG] / (Sub) වගේ ටැග්ස් අයින් කිරීම
   let cleanTitle = title.replace(/\s*[\[\(]?\s*(sub[- _]?eng|eng[- _]?sub|sub)\s*[\]\)]?\s*/ig, ' ');
-  
-  // 2. Windows/Android වලට අවුල් අකුරු අයින් කිරීම
   cleanTitle = cleanTitle.replace(/[\\/:*?"<>|]/g, '');
-  
-  // 3. අමතර spaces ටික එක space එකකට හරවා, දිග අඩු කිරීම
   cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim().substring(0, 60);
-  
   if (!cleanTitle) cleanTitle = 'Video';
 
   const safeTag = (customTag || '')
@@ -230,7 +234,7 @@ async function getDownloadLinks(pageUrl) {
 }
 
 // ============================================================
-// Helper: Send Video & Cleanup (Caption එක ඉවත් කර ඇත)
+// Helper: Send Video & Cleanup
 // ============================================================
 async function sendVideoToTargets(conn, from, session, quotedMsg) {
   const { selectedEpisode, selectedQuality, targetJids, customTag } = session;
@@ -251,7 +255,6 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
         await simulateTyping(conn, from, randomDelay(5000, 10000));
       }
 
-      // 🚨 Caption එක අයින් කළා (Document එක විතරයි යන්නේ)
       await conn.sendMessage(jid, {
         document: { url: selectedQuality.url },
         mimetype: 'video/mp4',
