@@ -7,12 +7,17 @@ const { generateWAMessageFromContent, proto, prepareWAMessageMedia } = require('
 let globalConn = null;
 const sessions = {};
 
+// AI assistant එකට access කරන්න global set expose කරයි
+// ඔබේ AI handler එකේ මුලට මේක දාන්න:
+//   if (global._hanimeSessions && global._hanimeSessions[from]) return;
+global._hanimeSessions = sessions;
+
 const SEARCH_API = 'https://poddax-api.dev/hanime/search?text=';
 const DOWNLOAD_API = 'https://poddax-api.dev/hanime/download?url=';
 
-const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // විනාඩි 5
-const LOADING_INTERVAL_MS = 1500;         // loading bar update වන කාලය
-const TOTAL_BARS = 20;                     // 5% = 1 bar, 20 bars = 100%
+const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+const LOADING_INTERVAL_MS = 1500;
+const TOTAL_BLOCKS = 10;   // 10% = 1 block, 100% = 10 blocks
 
 // ============================================================
 // Helper: API Request
@@ -41,16 +46,16 @@ function resetSessionTimeout(from) {
 }
 
 // ============================================================
-// Helper: Loading bar (• = filled, ○ = empty, 5% = 1 filled)
+// Helper: Loading bar (• only, 10% = 1 block, space for empty)
 // ============================================================
 function renderBar(percent) {
-  const filled = Math.min(TOTAL_BARS, Math.floor(percent / 5));
-  return '•'.repeat(filled) + '○'.repeat(TOTAL_BARS - filled);
+  const filled = Math.min(TOTAL_BLOCKS, Math.floor(percent / 10));
+  return '•'.repeat(filled) + '\u00A0'.repeat(TOTAL_BLOCKS - filled);
 }
 
 function buildLoadingText(title, subtitle, totalTargets, percent) {
   const targetLine = totalTargets > 1 ? `\n📤 Sending to ${totalTargets} chats` : '';
-  return `📥 Downloading: ${title}\n📦 ${subtitle}${targetLine}\n\n[${renderBar(percent)}] ${percent}%\n⏳ Please wait...`;
+  return `📥 Downloading: ${title}\n📦 ${subtitle}${targetLine}\n\n${renderBar(percent)} ${percent}%\n⏳ Please wait...`;
 }
 
 async function startLoadingBar(conn, from, quotedMsg, title, subtitle, totalTargets) {
@@ -79,7 +84,6 @@ async function startLoadingBar(conn, from, quotedMsg, title, subtitle, totalTarg
     stop: () => clearInterval(interval),
     finish: async (finalText) => {
       clearInterval(interval);
-      // 100% දක්වා smooth jump
       let p = percent;
       while (p < 100) {
         p = Math.min(100, p + 10);
@@ -100,27 +104,12 @@ async function startLoadingBar(conn, from, quotedMsg, title, subtitle, totalTarg
 }
 
 // ============================================================
-// Helper: Filename builders
-// Format: (EP01)TitleName[CustomTag].mp4
+// Helper: Filename builder — TitleName[Tag].mp4 (no parentheses)
 // ============================================================
-function extractEpisodeNum(title, fallbackIndex) {
-  const patterns = [
-    /\(ep?[\s._-]*(\d{1,4})\)/i,
-    /\bep?[\s._-]*(\d{1,4})\b/i,
-    /\bepisode[\s._-]*(\d{1,4})\b/i,
-    /^\s*(\d{1,4})\b/
-  ];
-  for (const p of patterns) {
-    const m = title.match(p);
-    if (m) return String(m[1]).padStart(2, '0');
-  }
-  return String(fallbackIndex).padStart(2, '0');
-}
-
-function buildFileName(title, episodeNum, customTag) {
+function buildFileName(title, customTag) {
   const cleanTitle = title.replace(/[^\w]/g, '').substring(0, 50) || 'Video';
   const safeTag = (customTag || '').replace(/[\[\]\/\\:*?"<>|]/g, '').trim().substring(0, 30) || 'HANIME';
-  return `(EP${episodeNum})${cleanTitle}[${safeTag}].mp4`;
+  return `${cleanTitle}[${safeTag}].mp4`;
 }
 
 // ============================================================
@@ -171,6 +160,36 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
 }
 
 // ============================================================
+// Helper: Quick reply buttons
+// ============================================================
+async function sendQuickButtons(conn, from, mek, bodyText, footerText, buttons) {
+  try {
+    const msg = generateWAMessageFromContent(from, {
+      interactiveMessage: proto.Message.InteractiveMessage.fromObject({
+        body: { text: bodyText },
+        footer: { text: footerText },
+        nativeFlowMessage: {
+          buttons: buttons.map(b => ({
+            name: 'quick_reply',
+            buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id })
+          }))
+        }
+      })
+    }, { quoted: mek });
+
+    await conn.relayMessage(from, msg.message, { messageId: msg.key.id });
+    return true;
+  } catch (e) {
+    console.error('[HANIME] Button send error:', e);
+    let fallback = bodyText + '\n\n';
+    buttons.forEach((b, i) => { fallback += `${i + 1} | ${b.text}\n`; });
+    fallback += '\n' + footerText;
+    await conn.sendMessage(from, { text: fallback }, { quoted: mek });
+    return false;
+  }
+}
+
+// ============================================================
 // Helper: API search / download
 // ============================================================
 async function searchHanime(query) {
@@ -189,11 +208,10 @@ async function getDownloadLinks(pageUrl) {
 // Helper: Send video to all targets (loading bar සමඟ)
 // ============================================================
 async function sendVideoToTargets(conn, from, session, quotedMsg) {
-  const { selectedEpisode, selectedQuality, targetJids, customTag, selectedIndex } = session;
+  const { selectedEpisode, selectedQuality, targetJids, customTag } = session;
   const total = targetJids.length;
 
-  const episodeNum = extractEpisodeNum(selectedEpisode.title, (selectedIndex || 0) + 1);
-  const fileName = buildFileName(selectedEpisode.title, episodeNum, customTag);
+  const fileName = buildFileName(selectedEpisode.title, customTag);
   const caption = `🎬 ${selectedEpisode.title}\n📥 Quality: ${selectedQuality.name}`;
 
   const loading = await startLoadingBar(
@@ -234,7 +252,7 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
 }
 
 // ============================================================
-// Helper: Episode selection → quality ලැයිස්තුව යවයි
+// Helper: Episode → quality list
 // ============================================================
 async function handleEpisodeSelection(conn, from, session, selectedItem, quotedMsg) {
   try {
@@ -270,7 +288,7 @@ async function handleEpisodeSelection(conn, from, session, selectedItem, quotedM
 }
 
 // ============================================================
-// Helper: Quality selection → destination අහයි
+// Helper: Quality → destination buttons (Inbox / Groups / Cancel)
 // ============================================================
 async function handleQualitySelection(conn, from, session, qualityIndex, quotedMsg) {
   const quality = session.qualities[qualityIndex];
@@ -283,9 +301,18 @@ async function handleQualitySelection(conn, from, session, qualityIndex, quotedM
   session.step = 'select_destination';
   resetSessionTimeout(from);
 
-  await conn.sendMessage(from, {
-    text: `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}\n\n📤 Where to send?\n\n1 | Inbox (DM)\n2 | Group(s)\n0 | ❌ Cancel\n\nReply with a number.`
-  }, { quoted: quotedMsg });
+  const bodyText = `🎬 ${session.selectedEpisode.title}\n📥 Quality: ${quality.name}\n\n📤 Where should I send the file?`;
+
+  await sendQuickButtons(
+    conn, from, quotedMsg,
+    bodyText,
+    'Choose a destination',
+    [
+      { text: '📥 Inbox (DM)', id: 'dest_inbox' },
+      { text: '👥 Group(s)', id: 'dest_group' },
+      { text: '❌ Cancel', id: 'close' }
+    ]
+  );
 }
 
 // ============================================================
@@ -367,9 +394,6 @@ if (!global._hanimeListenerAttached) {
         const session = sessions[from];
         if (!session) return;
 
-        // Debug (ඕන නම් uncomment):
-        // console.log('[HANIME] incoming:', JSON.stringify(msg.message, null, 2));
-
         // Wrap ඉවත් කරයි
         const inner =
           msg.message?.viewOnceMessage?.message ||
@@ -384,8 +408,77 @@ if (!global._hanimeListenerAttached) {
           inner.imageMessage?.caption ||
           '';
 
+        // Interactive / button response parse කිරීම
+        let listId = null;
+        listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId || null;
+        if (!listId) listId = inner.buttonsResponseMessage?.selectedButtonId || null;
+        if (!listId) {
+          const paramsJson =
+            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
+          if (paramsJson) {
+            try {
+              const p = typeof paramsJson === 'string' ? JSON.parse(paramsJson) : paramsJson;
+              listId = p.id || p.selectedId || p.selected_id || null;
+            } catch (e) {
+              console.error('[HANIME] paramsJson parse error:', e, paramsJson);
+            }
+          }
+        }
+
+        // Close / cancel
+        if (listId === 'close') {
+          if (session.timeout) clearTimeout(session.timeout);
+          delete sessions[from];
+          await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
+          return;
+        }
+
         // ============================================================
-        // Step: enter_jids - user group JIDs එවයි (2කට වඩා support)
+        // Step: select_destination — buttons හෝ text number
+        // ============================================================
+        if (session.step === 'select_destination') {
+          let choice = null;
+          if (listId === 'dest_inbox') choice = 1;
+          else if (listId === 'dest_group') choice = 2;
+          else {
+            const num = parseInt(textMsg.trim());
+            if (num === 0) {
+              if (session.timeout) clearTimeout(session.timeout);
+              delete sessions[from];
+              await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
+              return;
+            }
+            if (num === 1) choice = 1;
+            else if (num === 2) choice = 2;
+          }
+
+          if (choice === 1) {
+            const senderJid = msg.key.participant || msg.key.remoteJid;
+            session.targetJids = [senderJid];
+            session.step = 'enter_tag';
+            resetSessionTimeout(from);
+            await globalConn.sendMessage(from, {
+              text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
+            }, { quoted: msg });
+            return;
+          }
+
+          if (choice === 2) {
+            session.step = 'enter_jids';
+            resetSessionTimeout(from);
+            await globalConn.sendMessage(from, {
+              text: `📤 Send group JID(s). You can send multiple, separated by comma or newline.\n\nExample:\n1203631@g.us, 1203632@g.us\n\nOr type "inbox" to include your DM.`
+            }, { quoted: msg });
+            return;
+          }
+
+          await globalConn.sendMessage(from, { text: '❌ Please choose using the buttons (or reply 1 / 2 / 0).' }, { quoted: msg });
+          return;
+        }
+
+        // ============================================================
+        // Step: enter_jids
         // ============================================================
         if (session.step === 'enter_jids') {
           const raw = textMsg.trim();
@@ -420,7 +513,7 @@ if (!global._hanimeListenerAttached) {
         }
 
         // ============================================================
-        // Step: enter_tag - custom filename tag එවයි → file යවයි
+        // Step: enter_tag — custom tag → send video
         // ============================================================
         if (session.step === 'enter_tag') {
           const raw = textMsg.trim();
@@ -439,78 +532,7 @@ if (!global._hanimeListenerAttached) {
         }
 
         // ============================================================
-        // Interactive list / button response parse කිරීම
-        // ============================================================
-        let listId = null;
-
-        listId = inner.listResponseMessage?.singleSelectReply?.selectedRowId || null;
-        if (!listId) listId = inner.buttonsResponseMessage?.selectedButtonId || null;
-        if (!listId) {
-          const paramsJson =
-            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
-            inner.interactiveResponseMessage?.nativeFlowResponseMessage?.params_json;
-          if (paramsJson) {
-            try {
-              const p = typeof paramsJson === 'string' ? JSON.parse(paramsJson) : paramsJson;
-              listId = p.id || p.selectedId || p.selected_id || null;
-            } catch (e) {
-              console.error('[HANIME] paramsJson parse error:', e, paramsJson);
-            }
-          }
-        }
-
-        // Close / cancel check
-        if (listId === 'close') {
-          if (session.timeout) clearTimeout(session.timeout);
-          delete sessions[from];
-          await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-          return;
-        }
-
-        // ============================================================
-        // Step: select_destination - Inbox ද Group(s) ද තෝරයි
-        // ============================================================
-        if (session.step === 'select_destination') {
-          const num = parseInt(textMsg.trim());
-
-          if (isNaN(num)) {
-            await globalConn.sendMessage(from, { text: '❌ Please reply with a number (1, 2, or 0).' }, { quoted: msg });
-            return;
-          }
-
-          if (num === 0) {
-            if (session.timeout) clearTimeout(session.timeout);
-            delete sessions[from];
-            await globalConn.sendMessage(from, { text: '❌ Menu closed.' }, { quoted: msg });
-            return;
-          }
-
-          if (num === 1) {
-            const senderJid = msg.key.participant || msg.key.remoteJid;
-            session.targetJids = [senderJid];
-            session.step = 'enter_tag';
-            resetSessionTimeout(from);
-            await globalConn.sendMessage(from, {
-              text: `✅ Target: Inbox\n\n📝 Send a custom tag for the filename (goes inside [ ]):\nExample: SL_HL`
-            }, { quoted: msg });
-            return;
-          }
-
-          if (num === 2) {
-            session.step = 'enter_jids';
-            resetSessionTimeout(from);
-            await globalConn.sendMessage(from, {
-              text: `📤 Send group JID(s). You can send multiple, separated by comma or newline.\n\nExample:\n1203631@g.us, 1203632@g.us\n\nOr type "inbox" to include your DM.`
-            }, { quoted: msg });
-            return;
-          }
-
-          await globalConn.sendMessage(from, { text: '❌ Invalid option.' }, { quoted: msg });
-          return;
-        }
-
-        // ============================================================
-        // Step: select_episode / select_quality - list/number selection
+        // Step: select_episode / select_quality
         // ============================================================
         let selection = null;
 
@@ -539,7 +561,6 @@ if (!global._hanimeListenerAttached) {
 
         if (!selection) return;
 
-        // තේරීම හසුරුවයි
         if (selection.type === 'episode' && session.step === 'select_episode') {
           const item = session.results[selection.index];
           if (!item) {
