@@ -1,18 +1,24 @@
 /**
  * ───────────────────────────────────────────────────────────────
- *  YouTube → Audio / Voice Note downloader — WhatsApp bot
+ *  YouTube downloader — WhatsApp bot
  * ───────────────────────────────────────────────────────────────
  *  Commands:
- *    .ytaudl <link> [jid/lid]     → downloads as audio file
- *    .ytvcdl <link> [jid/lid]     → downloads as voice note (ptt)
- *    .ytaudl stop [jid/lid]       → cancel a running download
+ *    .ytdl <words | link> [jid/lid]  → search YouTube, pick a result with buttons, then choose
+ *                                      Audio / Voice note / Video  (video: quality + Document / Video)
+ *    .ytaudl <link> [jid/lid]        → downloads as audio file
+ *    .ytvcdl <link> [jid/lid]        → downloads as voice note (ptt)
+ *    .ytvdl <link> [jid/lid]         → downloads as video (buttons: quality, then Document / Video)
+ *    .ytaudl stop [jid/lid]          → cancel a running download (also .ytvcdl stop / .ytvdl stop)
  *
  *  Links that work:
- *    • a video link                      → that one song
+ *    • a video link                      → that one video
  *    • a playlist link                   → every video of the playlist
  *    • an auto-generated YouTube Mix     → (list=RD…) the videos of the Mix
  *    • a video link that also has a list → only the video, add "all" to get the whole list
  *        .ytaudl "https://www.youtube.com/watch?v=xxxxxxxxxxx&list=RDxxxxxxxxxxx" all
+ *
+ *  Voice notes need ffmpeg (OGG/Opus). No ffmpeg on your host?  →  npm i ffmpeg-static
+ *  Buttons not showing?  →  change BUTTON_STYLE below (every menu can also be answered with a number).
  * ───────────────────────────────────────────────────────────────
  */
 
@@ -22,13 +28,14 @@ const zlib = require('zlib');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const util = require('util');
 const execFilePromise = util.promisify(execFile);
 const { cmd } = require('../command'); // ← change this path if needed
 
 // ─────────────── settings ───────────────
-const API_BASE = 'https://apix.wolvarex.com/api/music/ytmp3-net-download';
+const API_BASE = process.env.WOLVAREX_API_BASE || 'https://apix.wolvarex.com/api/music/ytmp3-net-download';
 const API_PROVIDER = 'ytmp3';
 const API_KEY = process.env.WOLVAREX_API_KEY || 'wxa_f_ee1166962c';
 
@@ -44,6 +51,30 @@ const SHOW_ERROR_REASON   = true;
 const API_RETRY_DELAY_MS  = 5000;
 const API_MAX_RETRIES     = 3; // Attempts increased
 const PROGRESS_STEP       = 20;
+
+// ─────────────── video / search / button settings ───────────────
+const PODDAX_BASE          = process.env.PODDAX_API_BASE || 'https://poddax-api.dev';
+const PODDAX_NAME          = 'Poddax API';
+const MAX_VIDEO_MB         = 100;  // biggest video the bot will download and send (qualities above it are not offered)
+const MAX_VIDEO_PLAYLIST   = 20;   // .ytvdl with a playlist link: how many videos at most
+const MAX_SEARCH_RESULTS   = 10;   // .ytdl: results shown (WhatsApp lists hold 10 rows at most)
+const VIDEO_DL_RETRIES     = 3;    // a broken video download is resumed this many times
+const SHOW_VIDEO_SIZES     = true; // check the file size of every quality so it can be shown on the button
+const SESSION_TTL_MS       = 10 * 60 * 1000; // how long the buttons of a menu stay active
+
+// How the choice menus (buttons) are sent. Whatever you pick, every menu also lists its options as
+// 1, 2, 3 … and the person can answer by replying to the menu with the number, so the commands keep
+// working even where buttons do not show up.
+//   'auto'        → 'native' (when the connection has relayMessage), otherwise 'legacy'
+//   'native'      → WhatsApp interactive quick-reply buttons / list, relayed with the biz/bot nodes
+//                   (works on a plain @whiskeysockets/baileys, no extra package needed)
+//   'native-vo'   → the same, wrapped in a view-once envelope (try this if 'native' shows nothing)
+//   'interactive' → conn.sendMessage({ interactiveButtons }) — for Baileys forks / helper packages that
+//                   already add interactive-button support themselves
+//   'legacy'      → the old buttons / list message (conn.sendMessage({ buttons }) / sections)
+//   'text'        → no buttons at all, numbered text menus only
+const BUTTON_STYLE = 'auto';
+const MENU_FOOTER  = 'YouTube Downloader';
 
 // ─────────────── anti-ban timings ───────────────
 const TRACK_DELAY_MIN_MS   = 8000;
@@ -130,17 +161,33 @@ async function withRetry(fn, attempts = 3) {
 
 // ─────────────── bot messages ───────────────
 const MSG = {
-    usage: '❌ *Please provide a YouTube video or playlist link.*\n\n' +
+    usage: (cmdName) => '❌ *Please provide a YouTube video or playlist link.*\n\n' +
         '📌 *Examples:*\n' +
-        `${PREFIX_HINT}ytaudl https://youtu.be/xxxxxxxxxxx\n` +
-        `${PREFIX_HINT}ytaudl https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxx\n` +
-        `${PREFIX_HINT}ytaudl <link> 12345@g.us  (send to another chat)\n\n` +
+        `${PREFIX_HINT}${cmdName} https://youtu.be/xxxxxxxxxxx\n` +
+        `${PREFIX_HINT}${cmdName} https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxx\n` +
+        `${PREFIX_HINT}${cmdName} <link> 12345@g.us  (send to another chat)\n\n` +
         `ℹ️ A video link that also contains a playlist/Mix downloads only the video — add *all* to get the whole list:\n` +
-        `${PREFIX_HINT}ytaudl <link> all\n\n` +
-        `🛑 Send *${PREFIX_HINT}ytaudl stop* to cancel a running download.`,
+        `${PREFIX_HINT}${cmdName} <link> all\n\n` +
+        (cmdName === 'ytvdl' ? '🎞️ You will get buttons to choose the *quality* and *Document / Video*.\n\n' : '') +
+        `🛑 Send *${PREFIX_HINT}${cmdName} stop* to cancel a running download.`,
+    searchUsage: '❌ *Please type what you want to search for.*\n\n' +
+        '📌 *Examples:*\n' +
+        `${PREFIX_HINT}ytdl suzume\n` +
+        `${PREFIX_HINT}ytdl https://youtu.be/xxxxxxxxxxx\n` +
+        `${PREFIX_HINT}ytdl <words> 12345@g.us  (send to another chat)\n\n` +
+        'ℹ️ You will get buttons to pick the video and to choose *Audio / Voice note / Video*.',
+    searchPlaylistLink: `ℹ️ ${PREFIX_HINT}ytdl is for single videos. For a playlist link use *${PREFIX_HINT}ytaudl*, *${PREFIX_HINT}ytvcdl* or *${PREFIX_HINT}ytvdl*.`,
+    searching: (q) => `🔎 Searching YouTube for *${shorten(q, 60)}*...`,
+    noResults: (q) => `⚠️ No videos were found for *${shorten(q, 60)}*.`,
+    searchFailed: (r) => `❌ *YouTube search failed.*${MSG.reason(r)}`,
+    qualityFetching: '⏳ Getting the available video qualities...',
+    qualitiesFailed: (r) => `❌ *Could not get the video qualities.*${MSG.reason(r)}`,
+    allTooLarge: `⚠️ Every quality of this video is bigger than ${MAX_VIDEO_MB} MB, so it cannot be sent.`,
+    expired: '⌛ This menu has expired. Please send the command again.',
+    noButtons: '❌ Menus are not available here (the bot connection has no event listener).',
     invalid: '❌ *That does not look like a valid YouTube video or playlist link.*\n\nPlease check the link and try again.',
-    busy: '⏳ A download is already running in the target chat.\n\n' +
-        `Please wait for it to finish, or send *${PREFIX_HINT}ytaudl stop* to cancel it.`,
+    busy: (cmdName = 'ytaudl') => '⏳ A download is already running in the target chat.\n\n' +
+        `Please wait for it to finish, or send *${PREFIX_HINT}${cmdName} stop* to cancel it.`,
     tooManyJobs: '⏳ The bot is busy with other downloads right now. Please try again in a few minutes.',
     nothingRunning: 'ℹ️ There is no running download in the target chat.',
     stopping: '🛑 Stopping... the current track will finish first.',
@@ -148,7 +195,7 @@ const MSG = {
     playlistEmpty: '⚠️ No available videos were found in this playlist.',
     error: '❌ Something went wrong while processing your request. Please try again later.',
     reason: (r) => (SHOW_ERROR_REASON && r ? `\n\n🔎 *Reason:* ${shorten(redact(r), 350)}` : ''),
-    videoFailed: (r) => `❌ *Could not download this audio.*${MSG.reason(r)}`,
+    videoFailed: (r, mode) => `❌ *Could not download this ${mode === 'video' ? 'video' : 'audio'}.*${MSG.reason(r)}`,
     playlistFailed: (r) => `❌ *Could not read this playlist.*${MSG.reason(r)}\n\n` +
         'It may be private or deleted.',
 };
@@ -827,10 +874,18 @@ async function fetchAudioInfo(videoId, { onRetry, onInfo } = {}) {
 // ─────────────── downloading ───────────────
 const EXTENSIONS = { 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/aac': 'aac' };
 
+// some servers say "audio/mp3" or "audio/x-m4a" — WhatsApp wants the standard names
+function normalizeAudioMime(mime) {
+    const m = String(mime || '').toLowerCase().trim();
+    if (m === 'audio/mp3' || m === 'audio/x-mp3' || m === 'audio/x-mpeg') return 'audio/mpeg';
+    if (m === 'audio/x-m4a' || m === 'audio/m4a') return 'audio/mp4';
+    return m;
+}
+
 function mimeOf(headers, url) {
     const header = String(headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (/^(audio|video)\//.test(header)) return header.replace(/^video\//, 'audio/');
-    return urlParam(url, 'mime').toLowerCase() || 'audio/mpeg';
+    if (/^(audio|video)\//.test(header)) return normalizeAudioMime(header.replace(/^video\//, 'audio/'));
+    return normalizeAudioMime(urlParam(url, 'mime')) || 'audio/mpeg';
 }
 
 async function fetchPiece(url, start, headers) {
@@ -916,6 +971,322 @@ async function obtainAudio(videoId, dest, { onRetry, onInfo, onProgress } = {}) 
     throw lastError || new Error('the API returned no usable audio link');
 }
 
+// ═══════════════ PART 3 — Poddax API (YouTube search + video qualities) ═══════════════
+//   GET {PODDAX_BASE}/ytsearch?url=<words>   → { status, result: [{ title, url, duration, seconds, views, ago, author, thumbnail }] }
+//   GET {PODDAX_BASE}/ytmp4?url=<video link> → { status, title, author, thumbnail, downloads: [{ quality: "720", downloadUrl }] }
+
+// small JSON helper with retries (timeouts, HTTP 5xx / 429 / 403 are treated as temporary)
+async function getJson(url, { timeout = 30000, retries = 2, delay = 2000, onRetry } = {}) {
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) {
+            if (onRetry) await Promise.resolve(onRetry(attempt)).catch(() => {});
+            await sleep(delay * attempt);
+        }
+        try {
+            const r = await request(url, { headers: { Accept: 'application/json' }, timeout });
+            if (r.status === 403 || r.status === 429 || r.status >= 500) {
+                lastErr = httpError(r.status);
+                continue;
+            }
+            let data;
+            try {
+                data = JSON.parse(r.text);
+            } catch {
+                throw new Error(`the API did not return JSON (HTTP ${r.status})`);
+            }
+            if (r.status !== 200 || data.status === false || data.success === false) {
+                throw new Error(clean(
+                    data.message || data.error || data.msg,
+                    `the API refused the request (HTTP ${r.status})`
+                ));
+            }
+            return data;
+        } catch (err) {
+            if (isTemporary(err)) {
+                lastErr = err;
+                continue;
+            }
+            throw err;
+        }
+    }
+    if (lastErr && lastErr.status === 403) {
+        throw new Error('the API returned HTTP 403 (rate-limited or blocked). Please wait a few minutes and try again.');
+    }
+    throw lastErr || new Error('the API did not answer');
+}
+
+// YouTube search → [{ id, title, author, duration, seconds, views, ago, thumbnail }]
+async function searchYouTube(query) {
+    const data = await getJson(`${PODDAX_BASE}/ytsearch?url=${encodeURIComponent(query)}`, { retries: 2, delay: 2000 });
+    const list = Array.isArray(data.result) ? data.result : [];
+
+    const seen = new Set();
+    const results = [];
+    for (const r of list) {
+        const id = extractVideoId(r && r.url);
+        if (!id || seen.has(id)) continue; // channels / playlists / broken entries
+        seen.add(id);
+        results.push({
+            id,
+            title: clean(r.title, 'Untitled video'),
+            author: clean(r.author),
+            duration: clean(r.duration),
+            seconds: Number(r.seconds) || 0,
+            views: Number(r.views) || 0,
+            ago: clean(r.ago),
+            thumbnail: r.thumbnail || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+        });
+        if (results.length >= MAX_SEARCH_RESULTS) break;
+    }
+    return results;
+}
+
+// available video qualities of one video → { title, author, thumbnail, downloads: [{ num, label, url, size }] } (low → high)
+async function fetchVideoInfo(videoId, { onRetry } = {}) {
+    const data = await getJson(
+        `${PODDAX_BASE}/ytmp4?url=${encodeURIComponent(`https://youtu.be/${videoId}`)}`,
+        { timeout: 60000, retries: API_MAX_RETRIES, delay: API_RETRY_DELAY_MS, onRetry }
+    );
+    const src = data.result && typeof data.result === 'object' && !Array.isArray(data.result) ? data.result : data;
+    const raw = Array.isArray(src.downloads) ? src.downloads : Array.isArray(src.formats) ? src.formats : [];
+
+    const downloads = [];
+    const seen = new Set();
+    for (const d of raw) {
+        const url = d && (d.downloadUrl || d.download_url || d.url);
+        if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) continue;
+        const num = parseInt(String(d.quality || d.label || '').replace(/[^\d]/g, ''), 10) || 0;
+        const key = num || url;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        downloads.push({ num, label: num ? `${num}p` : clean(d.quality, 'video'), url, size: null });
+    }
+    if (!downloads.length) throw new Error('the API returned no video links');
+    downloads.sort((a, b) => a.num - b.num);
+
+    return {
+        title: clean(src.title),
+        author: clean(src.author),
+        thumbnail: src.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        downloads,
+    };
+}
+
+// the best quality that is not above `wanted`; if everything is above it, the lowest one
+function pickDownload(downloads, wanted) {
+    const sorted = downloads.slice().sort((a, b) => a.num - b.num);
+    const fitting = sorted.filter((d) => d.num && d.num <= wanted);
+    return fitting.length ? fitting[fitting.length - 1] : sorted[0];
+}
+
+// ─────────────── video downloading (streaming) ───────────────
+const STREAM_IDLE_MS = 30000;
+
+// sends a GET request and resolves as soon as the headers arrive (follows redirects); the body is not read yet
+function openStream(url, headers = {}, redirects = 5, timeout = STREAM_IDLE_MS) {
+    return new Promise((resolve, reject) => {
+        let target;
+        try {
+            target = new URL(url);
+        } catch {
+            return reject(new Error('invalid URL'));
+        }
+        const secure = target.protocol !== 'http:';
+
+        const req = (secure ? https : http).request({
+            hostname: target.hostname,
+            port: target.port || (secure ? 443 : 80),
+            path: target.pathname + target.search,
+            method: 'GET',
+            timeout,
+            headers: {
+                'User-Agent': USER_AGENT,
+                Accept: '*/*',
+                'Accept-Encoding': 'identity',
+                ...headers,
+            },
+        }, (res) => {
+            const status = res.statusCode;
+            if ([301, 302, 303, 307, 308].includes(status) && res.headers.location && redirects > 0) {
+                res.resume();
+                return resolve(openStream(new URL(res.headers.location, url).toString(), headers, redirects - 1, timeout));
+            }
+            resolve({ res, url, status });
+        });
+
+        req.on('timeout', () => req.destroy(new Error('the request timed out')));
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+// asks the server how big a file is without downloading it (a 1-byte ranged request); null if unknown
+async function probeSize(url) {
+    try {
+        const { res, status } = await openStream(url, { Range: 'bytes=0-0' }, 3, 7000);
+        res.on('error', () => {});
+        const range = /\/(\d+)\s*$/.exec(String(res.headers['content-range'] || ''));
+        const length = Number(res.headers['content-length']);
+        res.destroy();
+        if (range) return Number(range[1]);
+        if (status === 200 && length > 0) return length;
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+async function attachSizes(downloads) {
+    await Promise.all(downloads.map(async (d) => { d.size = await probeSize(d.url); }));
+}
+
+// writes the body of a response to a file (appending); resolves when the file is closed
+function pipeBody(res, dest, onBytes) {
+    return new Promise((resolve, reject) => {
+        const out = fs.createWriteStream(dest, { flags: 'a' });
+        let error = null;
+
+        const fail = (err) => {
+            if (error) return;
+            error = err;
+            res.unpipe(out);
+            res.destroy();
+            out.end();
+        };
+
+        res.on('data', (chunk) => {
+            const stop = onBytes(chunk.length);
+            if (stop) fail(stop);
+        });
+        res.on('error', fail);
+        res.on('aborted', () => fail(new Error('the connection was closed early')));
+        res.on('close', () => {
+            if (!res.complete) fail(new Error('the connection was closed early'));
+        });
+        out.on('error', fail);
+        out.on('close', () => (error ? reject(error) : resolve()));
+        res.pipe(out);
+    });
+}
+
+// downloads a video with one streaming request; if the connection drops half-way it continues
+// from where it stopped (Range request) instead of starting again
+async function downloadVideoToFile(url, dest, { onProgress } = {}) {
+    const maxBytes = MAX_VIDEO_MB * 1048576;
+    await fs.promises.writeFile(dest, '');
+
+    let current = url;
+    let lastError;
+
+    for (let attempt = 0; attempt <= VIDEO_DL_RETRIES; attempt++) {
+        if (attempt > 0) await sleep(1500 * attempt);
+        try {
+            let have = (await fs.promises.stat(dest)).size; // what is really on disk
+            const { res, url: finalUrl, status } = await openStream(current, have ? { Range: `bytes=${have}-` } : {});
+            current = finalUrl;
+
+            if (status === 416) { // our resume offset was refused → start over
+                res.resume();
+                await fs.promises.writeFile(dest, '');
+                throw new Error('the server refused to resume the download');
+            }
+            if (status !== 200 && status !== 206) {
+                res.resume();
+                throw httpError(status);
+            }
+            const type = String(res.headers['content-type'] || '').toLowerCase();
+            if (/^text\/|json|html/.test(type)) {
+                res.resume();
+                throw Object.assign(new Error('the server sent text instead of a video'), { fatal: true });
+            }
+
+            let total = null;
+            if (status === 206) {
+                const m = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(String(res.headers['content-range'] || '').trim());
+                if (!m || Number(m[1]) !== have) {
+                    res.resume();
+                    throw new Error('the server sent a damaged piece of the file');
+                }
+                total = m[3] === '*' ? null : Number(m[3]);
+            } else {
+                if (have) { // the server ignored our Range header and sent everything again
+                    await fs.promises.writeFile(dest, '');
+                    have = 0;
+                }
+                total = Number(res.headers['content-length']) || null;
+            }
+            if (total && total > maxBytes) {
+                res.resume();
+                throw Object.assign(new Error(`the file is too large (${formatBytes(total)})`), { tooLarge: true });
+            }
+
+            let received = have;
+            let reporting = false;
+            await pipeBody(res, dest, (n) => {
+                received += n;
+                if (received > maxBytes) {
+                    return Object.assign(new Error(`the file is too large (over ${MAX_VIDEO_MB} MB)`), { tooLarge: true });
+                }
+                if (onProgress && total && !reporting) {
+                    reporting = true;
+                    const percent = Math.min(100, Math.round((received / total) * 100));
+                    Promise.resolve(onProgress(received, total, percent))
+                        .catch(() => {})
+                        .finally(() => { reporting = false; });
+                }
+                return null;
+            });
+
+            const size = (await fs.promises.stat(dest)).size;
+            if (total && size !== total) throw new Error('the download ended with the wrong size');
+            if (!size) throw new Error('received an empty file');
+            return { path: dest, bytes: size, mime: 'video/mp4', ext: 'mp4' };
+        } catch (err) {
+            if (err.tooLarge || err.fatal) throw err;
+            // 403 / 404 / 410 …: the link itself is bad → give up here (the caller may ask the API for a fresh one)
+            if (err.status && err.status < 500 && err.status !== 429) throw err;
+            lastError = err;
+        }
+    }
+    throw lastError || new Error('the video download failed');
+}
+
+// get the video link (+ qualities) and download it. `download` = the quality the person picked,
+// `wanted` = a number like 720 (playlists: the closest quality the video has is used)
+async function obtainVideo(videoId, dest, { info, download, wanted, titleHint, onRetry, onInfo, onProgress } = {}) {
+    let data = info || null;
+    let chosen = download || null;
+    const want = (download && download.num) || wanted || 720;
+
+    for (let round = 0; ; round++) {
+        if (!data) data = await fetchVideoInfo(videoId, { onRetry });
+        if (!chosen) chosen = pickDownload(data.downloads, want);
+
+        const meta = {
+            title: data.title || titleHint || `YouTube video ${videoId}`,
+            size: chosen.size ? formatBytes(chosen.size) : '',
+            type: `MP4 ${chosen.label}`,
+            quality: chosen.label,
+            creator: PODDAX_NAME,
+        };
+        if (round === 0 && onInfo) await Promise.resolve(onInfo(meta)).catch(() => {});
+
+        try {
+            const file = await downloadVideoToFile(chosen.url, dest, { onProgress });
+            return { ...file, meta };
+        } catch (err) {
+            // the link may have expired while the person was choosing → ask the API once more
+            if (round === 0 && [403, 404, 410].includes(err.status)) {
+                data = null;
+                chosen = null;
+                continue;
+            }
+            throw err;
+        }
+    }
+}
+
 // ─────────────── temp files ───────────────
 let tempDirCache = null;
 
@@ -944,57 +1315,190 @@ const tempPath = (videoId) =>
 
 const removeFile = (file) => fs.promises.unlink(file).catch(() => {});
 
-// ─────────────── send audio / voice note ───────────────
-async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode = false) {
-    const fitsAudio = file.bytes <= AUDIO_MAX_MB * 1048576 && /^audio\/(mp4|mpeg|ogg|aac|webm)/.test(file.mime);
-    let audioPath = file.path;
-    let audioMime = file.mime;
+// ─────────────── ffmpeg (needed for real voice notes) ───────────────
+// WhatsApp only shows an audio file as a *voice note* when it is OGG/Opus, so the downloaded file has to be
+// converted. ffmpeg is looked for in this order: the FFMPEG_PATH env variable, the "ffmpeg-static" and
+// "@ffmpeg-installer/ffmpeg" npm packages, and finally the ffmpeg installed on the server.
+// If your host has no ffmpeg, run this once in the bot folder:   npm i ffmpeg-static
+let ffmpegState = null; // { bin, checkedAt }
 
-    if (voiceMode && fitsAudio) {
-        const oggPath = file.path.replace(/\.[^.]+$/, '.ogg');
+async function findFfmpeg() {
+    if (ffmpegState && (ffmpegState.bin || Date.now() - ffmpegState.checkedAt < 600000)) return ffmpegState.bin;
+
+    const candidates = [];
+    if (process.env.FFMPEG_PATH) candidates.push(process.env.FFMPEG_PATH);
+    for (const name of ['ffmpeg-static', '@ffmpeg-installer/ffmpeg']) {
         try {
-            await execFilePromise('ffmpeg', [
-                '-i', file.path,
-                '-c:a', 'libopus',
-                '-b:a', '64k',
-                '-ar', '48000',
-                '-ac', '1',
-                '-y',
-                oggPath
-            ], { timeout: 60000 });
+            const mod = require(name);
+            const bin = typeof mod === 'string' ? mod : mod && mod.path;
+            if (bin) candidates.push(bin);
+        } catch { /* package not installed */ }
+    }
+    candidates.push('ffmpeg');
 
-            audioPath = oggPath;
-            audioMime = 'audio/ogg; codecs=opus';
+    for (const bin of candidates) {
+        try {
+            await execFilePromise(bin, ['-version'], { timeout: 15000 });
+            ffmpegState = { bin, checkedAt: Date.now() };
+            console.log(`[ytaudl] ffmpeg found: ${bin}`);
+            return bin;
+        } catch { /* try the next one */ }
+    }
+    ffmpegState = { bin: null, checkedAt: Date.now() };
+    return null;
+}
+
+const warned = new Set();
+function warnOnce(text) {
+    if (warned.has(text)) return;
+    warned.add(text);
+    console.error(text);
+}
+
+// any audio/video file → mono OGG/Opus (the format WhatsApp uses for voice notes)
+async function convertToOpus(inputPath) {
+    const ffmpeg = await findFfmpeg();
+    if (!ffmpeg) throw new Error('ffmpeg is not installed on this server (run: npm i ffmpeg-static)');
+
+    const outPath = `${inputPath.replace(/\.[^./\\]+$/, '')}.voice.ogg`;
+    let lastError;
+    for (const encoder of ['libopus', 'opus']) {
+        try {
+            await execFilePromise(ffmpeg, [
+                '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+                '-i', inputPath,
+                '-vn', '-map_metadata', '-1',
+                '-c:a', encoder,
+                ...(encoder === 'opus' ? ['-strict', '-2'] : []),
+                '-b:a', '64k', '-ar', '48000', '-ac', '1',
+                '-f', 'ogg', outPath,
+            ], { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+            const { size } = await fs.promises.stat(outPath);
+            if (!size) throw new Error('ffmpeg produced an empty file');
+            return { path: outPath, bytes: size };
         } catch (err) {
-            console.error('[ytaudl] ffmpeg conversion failed:', err.message);
-            voiceMode = false;
+            lastError = err;
+            await removeFile(outPath);
         }
     }
+    throw new Error(clean(lastError && (lastError.stderr || lastError.message), 'ffmpeg failed').slice(0, 300));
+}
 
-    const payload = fitsAudio
-        ? { audio: { url: audioPath }, mimetype: audioMime, ptt: voiceMode }
-        : { document: { url: file.path }, mimetype: file.mime, fileName: `${safeFileName(title)}.${file.ext}` };
-
-    let sent = false;
+// ─────────────── send audio / voice note ───────────────
+// sends with a reply (quote); if the reply fails it is sent normally
+async function sendWithQuote(conn, targetJid, payload, quotedMsg) {
     if (quotedMsg) {
         try {
-            await conn.sendMessage(targetJid, payload, { quoted: quotedMsg });
-            sent = true;
+            return await conn.sendMessage(targetJid, payload, { quoted: quotedMsg });
         } catch (err) {
             console.error('[ytaudl] reply failed, sending normally:', err.message);
         }
     }
-    if (!sent) {
-        await conn.sendMessage(targetJid, payload);
+    return conn.sendMessage(targetJid, payload);
+}
+
+// builds the voice-note message: converted to OGG/Opus when possible, otherwise the original file flagged as
+// a voice note. Returns null when the file can only be sent as a document (too long / unsuitable format).
+async function buildVoicePayload(file, cleanup) {
+    const limit = AUDIO_MAX_MB * 1048576;
+
+    let ogg = null;
+    try {
+        ogg = await convertToOpus(file.path);
+        cleanup.push(ogg.path);
+    } catch (err) {
+        warnOnce(
+            `[ytaudl] voice-note conversion failed: ${redact(err.message)}\n` +
+            '[ytaudl] → falling back to sending the original file flagged as a voice note. ' +
+            'For proper voice notes install ffmpeg on the server, or run: npm i ffmpeg-static'
+        );
     }
 
-    if (audioPath !== file.path) {
-        await removeFile(audioPath);
+    if (ogg) {
+        if (ogg.bytes > limit) return null;
+        return { audio: { url: ogg.path }, mimetype: 'audio/ogg; codecs=opus', ptt: true };
+    }
+    if (file.bytes <= limit && /^audio\/(mpeg|mp4|aac|ogg)/.test(file.mime)) {
+        return { audio: { url: file.path }, mimetype: file.mime, ptt: true };
+    }
+    return null;
+}
+
+async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode = false) {
+    const cleanup = [];
+    const asDocument = () => ({
+        document: { url: file.path },
+        mimetype: file.mime,
+        fileName: `${safeFileName(title)}.${file.ext}`,
+    });
+
+    try {
+        let payload;
+        if (voiceMode) {
+            payload = (await buildVoicePayload(file, cleanup)) || asDocument();
+        } else {
+            const fitsAudio = file.bytes <= AUDIO_MAX_MB * 1048576 && /^audio\//.test(file.mime);
+            payload = fitsAudio ? { audio: { url: file.path }, mimetype: file.mime, ptt: false } : asDocument();
+        }
+        await sendWithQuote(conn, targetJid, payload, quotedMsg);
+    } finally {
+        for (const tmp of cleanup) await removeFile(tmp);
     }
 }
 
+// ─────────────── send video / document ───────────────
+async function sendVideoFile(conn, targetJid, file, meta, quotedMsg, asDocument) {
+    const quality = meta.quality ? ` • ${meta.quality}` : '';
+    const caption = `🎬 *${shorten(meta.title, 150)}*\n📺 MP4${quality} • 📦 ${formatBytes(file.bytes)}`;
+    const documentPayload = {
+        document: { url: file.path },
+        mimetype: 'video/mp4',
+        fileName: `${safeFileName(meta.title)}${meta.quality ? ` (${meta.quality})` : ''}.mp4`,
+        caption,
+    };
+
+    if (asDocument) return sendWithQuote(conn, targetJid, documentPayload, quotedMsg);
+    try {
+        return await sendWithQuote(conn, targetJid, { video: { url: file.path }, mimetype: 'video/mp4', caption }, quotedMsg);
+    } catch (err) {
+        console.error('[ytaudl] sending as a video failed, sending as a document instead:', err.message);
+        return sendWithQuote(conn, targetJid, documentPayload, quotedMsg);
+    }
+}
+
+// ─────────────── what a job downloads and how it is sent ───────────────
+const COMMAND_NAME = { audio: 'ytaudl', voice: 'ytvcdl', video: 'ytvdl' };
+
+function makeWorker(conn, targetJid, mode, options = {}) {
+    if (mode === 'video') {
+        return {
+            icon: '🎬',
+            slowUpload: true, // big files take a while to upload → show an "uploading" status
+            infoLine: (info) => `📺 ${info.type || 'MP4'}${info.size ? ` | 📦 Size: ${info.size}` : ''}`,
+            obtain: (videoId, dest, hooks) => obtainVideo(videoId, dest, {
+                info: options.info,
+                download: options.download,
+                wanted: options.wanted,
+                titleHint: options.title,
+                ...hooks,
+            }),
+            send: (file, quoted) => sendVideoFile(conn, targetJid, file, file.meta, quoted, !!options.asDocument),
+        };
+    }
+    const voice = mode === 'voice';
+    return {
+        icon: voice ? '🎤' : '🎵',
+        slowUpload: false,
+        infoLine: (info, compact) => (compact
+            ? `📦 ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}`
+            : `📦 Size: ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}`),
+        obtain: (videoId, dest, hooks) => obtainAudio(videoId, dest, hooks),
+        send: (file, quoted) => sendAudioFile(conn, targetJid, file, file.meta.title, quoted, voice),
+    };
+}
+
 // ─────────────── header builder (playlist) ───────────────
-function buildPlaylistHeader(playlistTitle, total, sent, extraLine) {
+function buildPlaylistHeader(playlistTitle, total, sent, extraLine, cmdName = 'ytaudl') {
     const pct = total ? Math.round((sent / total) * 100) : 0;
     const bar = progressBar(pct, 14);
     const parts = [
@@ -1004,13 +1508,16 @@ function buildPlaylistHeader(playlistTitle, total, sent, extraLine) {
         `${bar} *${sent}/${total} sent* (${pct}%)`,
     ];
     if (extraLine) parts.push(extraLine);
-    parts.push(`🛑 Send *${PREFIX_HINT}ytaudl stop* to cancel.`);
+    parts.push(`🛑 Send *${PREFIX_HINT}${cmdName} stop* to cancel.`);
     return parts.join('\n');
 }
 
 // ─────────────── single video job ───────────────
-async function downloadOne(conn, targetJid, mek, videoId, say, mode) {
-    const icon = mode === 'voice' ? '🎤' : '🎵';
+// mode: 'audio' | 'voice' | 'video'
+// options (video only): { info, download, wanted, asDocument, title }
+async function downloadOne(conn, targetJid, mek, videoId, say, mode, options = {}) {
+    const worker = makeWorker(conn, targetJid, mode, options);
+    const icon = worker.icon;
 
     let statusMsg = null;
     try {
@@ -1024,6 +1531,7 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode) {
     const dest = tempPath(videoId);
     let meta = null;
     let lastPercent = -PROGRESS_STEP;
+    const fallbackTitle = options.title || `YouTube ${mode === 'video' ? 'video' : 'audio'} ${videoId}`;
 
     const update = async (text) => {
         const ok = await editMessage(conn, targetJid, statusKey, text);
@@ -1031,7 +1539,7 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode) {
     };
 
     try {
-        const file = await obtainAudio(videoId, dest, {
+        const file = await worker.obtain(videoId, dest, {
             onRetry: async (attempt) => {
                 await update(
                     `🔄 *API is busy or timed out.*\n` +
@@ -1043,8 +1551,8 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode) {
                 lastPercent = 0;
                 await update(
                     `${icon} *${shorten(info.title, 100)}*\n\n` +
-                    `📦 Size: ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}\n` +
-                    `👤 Source: ${info.creator || 'Wolvarex API'}\n\n` +
+                    `${worker.infoLine(info)}\n` +
+                    `👤 Source: ${info.creator || 'API'}\n\n` +
                     `${progressBar(0)} 0%`
                 );
             },
@@ -1052,37 +1560,51 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode) {
                 if (percent < 100 && percent - lastPercent < PROGRESS_STEP) return;
                 lastPercent = percent;
                 await update(
-                    `${icon} *${shorten(meta?.title || `YouTube audio ${videoId}`, 100)}*\n\n` +
+                    `${icon} *${shorten(meta?.title || fallbackTitle, 100)}*\n\n` +
                     `${progressBar(percent)} ${percent}%\n` +
                     `📥 ${formatBytes(written)} / ${formatBytes(total)}`
                 );
             },
         });
 
-        await update(
+        const doneText =
             `✅ ${icon} *${shorten(file.meta.title, 100)}*\n` +
-            `📦 ${formatBytes(file.bytes)}`
-        );
+            `📦 ${formatBytes(file.bytes)}`;
+
+        if (worker.slowUpload) {
+            await update(`📤 *Uploading to WhatsApp...*\n${icon} ${shorten(file.meta.title, 100)}\n📦 ${formatBytes(file.bytes)}`);
+        } else {
+            await update(doneText);
+        }
 
         await humanPresence(conn, targetJid);
 
         // Reply to the same status message we edited
-        await sendAudioFile(conn, targetJid, file, file.meta.title, statusMsg, mode === 'voice');
+        await worker.send(file, statusMsg);
+        if (worker.slowUpload) await update(doneText);
     } catch (err) {
         console.error('[ytaudl] video job failed:', redact(err.message));
-        await update(MSG.videoFailed(err.message));
+        await update(MSG.videoFailed(err.message, mode));
     } finally {
         await removeFile(dest);
     }
 }
 
 // ─────────────── playlist job ───────────────
-async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hintVideoId) {
-    const icon = mode === 'voice' ? '🎤' : '🎵';
+// options: { playlist (already read → skip reading), wanted, asDocument }  (the last two are for video mode)
+async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hintVideoId, options = {}) {
+    const worker = makeWorker(conn, targetJid, mode, options);
+    const icon = worker.icon;
+    const cmdName = COMMAND_NAME[mode];
+    const limit = mode === 'video' ? MAX_VIDEO_PLAYLIST : MAX_PLAYLIST_TRACKS;
 
     let headerMsg = null;
     try {
-        headerMsg = await conn.sendMessage(targetJid, { text: MSG.playlistFetching }, mek ? { quoted: mek } : undefined);
+        headerMsg = await conn.sendMessage(
+            targetJid,
+            { text: options.playlist ? '⏳ Starting...' : MSG.playlistFetching },
+            mek ? { quoted: mek } : undefined
+        );
     } catch {
         return say(MSG.error);
     }
@@ -1094,19 +1616,21 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
     };
 
     // 1) read the playlist (normal playlists and auto-generated Mixes)
-    let playlist;
-    try {
-        playlist = await fetchPlaylist(listId, MAX_PLAYLIST_TRACKS, hintVideoId);
-    } catch (err) {
-        console.error('[ytaudl] playlist failed:', redact(err.message));
-        return updateHeader(MSG.playlistFailed(err.message));
+    let playlist = options.playlist || null;
+    if (!playlist) {
+        try {
+            playlist = await fetchPlaylist(listId, limit, hintVideoId);
+        } catch (err) {
+            console.error('[ytaudl] playlist failed:', redact(err.message));
+            return updateHeader(MSG.playlistFailed(err.message));
+        }
     }
 
     const tracks = playlist.videos;
     if (!tracks.length) return updateHeader(MSG.playlistEmpty);
 
     // 2) header → playlist info + 0/N bar
-    await updateHeader(buildPlaylistHeader(playlist.title, tracks.length, 0, '⏳ Starting...'));
+    await updateHeader(buildPlaylistHeader(playlist.title, tracks.length, 0, '⏳ Starting...', cmdName));
 
     let sent = 0;
     let streak = 0;
@@ -1142,7 +1666,8 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
         let lastPercent = -PROGRESS_STEP;
 
         try {
-            const file = await obtainAudio(track.id, dest, {
+            const file = await worker.obtain(track.id, dest, {
+                titleHint: track.title,
                 onRetry: async (attempt) => {
                     await updateTrack(
                         `${tag} ${icon} *${shorten(track.title, 80)}*\n\n` +
@@ -1154,7 +1679,7 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
                     lastPercent = 0;
                     await updateTrack(
                         `${tag} ${icon} *${shorten(info.title, 80)}*\n\n` +
-                        `📦 ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}\n\n` +
+                        `${worker.infoLine(info, true)}\n\n` +
                         `${progressBar(0)} 0%`
                     );
                 },
@@ -1177,7 +1702,7 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
             await humanPresence(conn, targetJid, 600, 1500);
 
             // Pass the whole message object for replying
-            await sendAudioFile(conn, targetJid, file, file.meta.title, trackMsg, mode === 'voice');
+            await worker.send(file, trackMsg);
 
             sent++;
             streak = 0;
@@ -1185,7 +1710,7 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
             const extra = sent >= tracks.length
                 ? '✅ *All tracks sent!*'
                 : `⏳ Next: track ${i + 2}...`;
-            await updateHeader(buildPlaylistHeader(playlist.title, tracks.length, sent, extra));
+            await updateHeader(buildPlaylistHeader(playlist.title, tracks.length, sent, extra, cmdName));
 
         } catch (err) {
             failed.push(track.title);
@@ -1228,10 +1753,578 @@ async function downloadPlaylist(conn, targetJid, mek, listId, job, say, mode, hi
     await updateHeader(lines.join('\n'));
 }
 
-// ─────────────── shared command handler ───────────────
+// ═══════════════ PART 4 — buttons / menus ═══════════════
+// menu = { title, text, options: [{ id, label, desc }], listLabel, listTitle, numbered }
+//   • up to 3 options → quick-reply buttons, more → a list ("Select …" button)
+//   • every menu also lists its options as 1, 2, 3 … so the person can simply reply with the number
+
+const PLAYLIST_QUALITIES = [144, 360, 720, 1080];
+
+function formatViews(n) {
+    if (!n) return '';
+    const trim = (x) => x.toFixed(1).replace(/\.0$/, '');
+    if (n >= 1e9) return `${trim(n / 1e9)}B`;
+    if (n >= 1e6) return `${trim(n / 1e6)}M`;
+    if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
+    return String(n);
+}
+
+const videoLine = (v) => [
+    v.duration && `⏱ ${v.duration}`,
+    v.views && `👁 ${formatViews(v.views)}`,
+    v.author && `📺 ${shorten(v.author, 22)}`,
+].filter(Boolean).join(' · ');
+
+function menuBody(menu, withButtons) {
+    const lines = [menu.text];
+    if (menu.numbered !== false) lines.push('', ...menu.options.map((o, i) => `*${i + 1}.* ${o.label}`));
+    lines.push('', withButtons
+        ? '👇 Tap a button below — or reply to this message with a number.'
+        : '↩️ Reply to this message with a number.');
+    return lines.join('\n');
+}
+
+// quick-reply buttons (≤ 3 options) or one list button, in WhatsApp's "native flow" format
+function nativeButtons(menu) {
+    if (menu.options.length <= 3) {
+        return menu.options.map((o) => ({
+            name: 'quick_reply',
+            buttonParamsJson: JSON.stringify({ display_text: shorten(o.label, 20), id: o.id }),
+        }));
+    }
+    return [{
+        name: 'single_select',
+        buttonParamsJson: JSON.stringify({
+            title: shorten(menu.listLabel || 'Select', 24),
+            sections: [{
+                title: shorten(menu.listTitle || 'Options', 24),
+                rows: menu.options.map((o) => ({
+                    id: o.id,
+                    title: shorten(o.label, 24),
+                    description: shorten(o.desc || '', 72),
+                })),
+            }],
+        }),
+    }];
+}
+
+function quoteContext(conn, quoted) {
+    if (!quoted || !quoted.key || !quoted.message) return null;
+    const me = conn.user && conn.user.id ? String(conn.user.id).replace(/:\d+(?=@)/, '') : undefined;
+    return {
+        stanzaId: quoted.key.id,
+        participant: quoted.key.fromMe ? me : (quoted.key.participant || quoted.key.remoteJid),
+        quotedMessage: quoted.message,
+    };
+}
+
+// style "native": works on a plain @whiskeysockets/baileys — the message is relayed together with the
+// binary nodes WhatsApp needs to show interactive buttons (private chat: biz + bot, group: biz)
+async function sendNativeMenu(conn, jid, menu, quoted, viewOnce = false) {
+    if (typeof conn.relayMessage !== 'function') throw new Error('this connection has no relayMessage');
+
+    const messageId = `3EB0${crypto.randomBytes(9).toString('hex').toUpperCase()}`;
+    const interactiveMessage = {
+        header: { title: menu.title || '', hasMediaAttachment: false },
+        body: { text: menuBody(menu, true) },
+        footer: { text: MENU_FOOTER },
+        nativeFlowMessage: { buttons: nativeButtons(menu), messageParamsJson: '' },
+    };
+    const context = quoteContext(conn, quoted);
+    if (context) interactiveMessage.contextInfo = context;
+
+    const inner = {
+        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+        interactiveMessage,
+    };
+    const message = viewOnce ? { viewOnceMessage: { message: inner } } : inner;
+    const additionalNodes = [{
+        tag: 'biz',
+        attrs: {},
+        content: [{
+            tag: 'interactive',
+            attrs: { type: 'native_flow', v: '1' },
+            content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }],
+        }],
+    }];
+    if (!String(jid).endsWith('@g.us')) additionalNodes.push({ tag: 'bot', attrs: { biz_bot: '1' } });
+
+    await conn.relayMessage(jid, message, { messageId, additionalNodes });
+    return { key: { remoteJid: jid, fromMe: true, id: messageId }, message };
+}
+
+// style "interactive": Baileys forks / helpers that understand `interactiveButtons` in sendMessage
+function sendInteractiveMenu(conn, jid, menu, quoted) {
+    return conn.sendMessage(jid, {
+        text: menuBody(menu, true),
+        title: menu.title,
+        footer: MENU_FOOTER,
+        interactiveButtons: nativeButtons(menu),
+    }, quoted ? { quoted } : undefined);
+}
+
+// style "legacy": the old buttons / list message
+function sendLegacyMenu(conn, jid, menu, quoted) {
+    const opts = quoted ? { quoted } : undefined;
+    if (menu.options.length <= 3) {
+        return conn.sendMessage(jid, {
+            text: menuBody(menu, true),
+            footer: MENU_FOOTER,
+            buttons: menu.options.map((o) => ({
+                buttonId: o.id,
+                buttonText: { displayText: shorten(o.label, 20) },
+                type: 1,
+            })),
+            headerType: 1,
+        }, opts);
+    }
+    return conn.sendMessage(jid, {
+        text: menuBody(menu, true),
+        footer: MENU_FOOTER,
+        title: menu.title,
+        buttonText: shorten(menu.listLabel || 'Select', 24),
+        sections: [{
+            title: menu.listTitle || 'Options',
+            rows: menu.options.map((o) => ({
+                title: shorten(o.label, 24),
+                description: shorten(o.desc || '', 72),
+                rowId: o.id,
+            })),
+        }],
+    }, opts);
+}
+
+const MENU_SENDERS = {
+    native: (conn, jid, menu, quoted) => sendNativeMenu(conn, jid, menu, quoted, false),
+    'native-vo': (conn, jid, menu, quoted) => sendNativeMenu(conn, jid, menu, quoted, true),
+    interactive: sendInteractiveMenu,
+    legacy: sendLegacyMenu,
+};
+
+function resolveStyle(conn) {
+    if (BUTTON_STYLE !== 'auto') return BUTTON_STYLE;
+    return typeof conn.relayMessage === 'function' ? 'native' : 'legacy';
+}
+
+// sends a menu; if the chosen button style fails it falls back to a numbered text menu
+async function sendMenu(conn, jid, menu, quoted) {
+    const style = resolveStyle(conn);
+    const sender = MENU_SENDERS[style];
+    let sent = null;
+
+    if (sender) {
+        try {
+            sent = await sender(conn, jid, menu, quoted);
+        } catch (err) {
+            warnOnce(`[ytaudl] "${style}" buttons failed (${redact(err && err.message)}) → using numbered text menus. Try another BUTTON_STYLE.`);
+        }
+    }
+    if (!sent) {
+        sent = await conn.sendMessage(jid, { text: menuBody(menu, false) }, quoted ? { quoted } : undefined);
+    }
+    return sent;
+}
+
+// ═══════════════ PART 5 — interactive sessions (one per menu conversation) ═══════════════
+const sessions = new Map();
+const ID_RE = /^ytdl:([a-z0-9]+):([a-z]+):([\w-]*)$/;
+const seenReplies = new Set();
+
+function pruneSessions() {
+    const now = Date.now();
+    for (const [id, s] of sessions) if (now - s.touched > SESSION_TTL_MS) sessions.delete(id);
+}
+
+function createSession(data) {
+    pruneSessions();
+    let id;
+    do { id = Math.random().toString(36).slice(2, 8); } while (!id || sessions.has(id));
+    const session = { id, step: null, touched: Date.now(), busy: false, menu: null, ...data };
+    sessions.set(id, session);
+    return session;
+}
+
+const endSession = (session) => sessions.delete(session.id);
+
+// shows a menu and remembers which step the session is waiting for
+async function showMenu(conn, session, step, menu) {
+    session.step = step;
+    session.touched = Date.now();
+    const options = menu.options.map((o) => ({ ...o, id: `ytdl:${session.id}:${step}:${o.value}` }));
+    const sent = await sendMenu(conn, session.promptJid, { ...menu, options }, session.quoted);
+    session.menu = { msgId: sent && sent.key && sent.key.id, options };
+    return sent;
+}
+
+const findSessionByMenu = (msgId) => {
+    for (const s of sessions.values()) if (s.menu && s.menu.msgId === msgId) return s;
+    return null;
+};
+
+const jidNumber = (jid) => String(jid || '').split('@')[0].split(':')[0];
+const jidDomain = (jid) => String(jid || '').split('@')[1] || '';
+function sameUser(a, b) {
+    if (!a || !b) return true;                         // cannot tell → do not block
+    if (jidDomain(a) !== jidDomain(b)) return true;    // phone-number JID vs LID → cannot compare
+    return jidNumber(a) === jidNumber(b);
+}
+const senderOf = (opts, mek) =>
+    (opts && opts.sender) || (mek && mek.key && (mek.key.participant || mek.key.remoteJid)) || '';
+
+// ─────────────── reading the answers ───────────────
+function unwrapMessage(message) {
+    let m = message;
+    for (let i = 0; i < 5 && m; i++) {
+        const inner =
+            (m.ephemeralMessage && m.ephemeralMessage.message) ||
+            (m.viewOnceMessage && m.viewOnceMessage.message) ||
+            (m.viewOnceMessageV2 && m.viewOnceMessageV2.message) ||
+            (m.viewOnceMessageV2Extension && m.viewOnceMessageV2Extension.message) ||
+            (m.documentWithCaptionMessage && m.documentWithCaptionMessage.message);
+        if (!inner) break;
+        m = inner;
+    }
+    return m || {};
+}
+
+// → { id: id of the pressed button / list row (or null), text: typed text, quotedId: id of the message replied to }
+function readReply(message) {
+    const m = unwrapMessage(message);
+    let id = null;
+
+    if (m.buttonsResponseMessage) {
+        id = m.buttonsResponseMessage.selectedButtonId;
+    } else if (m.templateButtonReplyMessage) {
+        id = m.templateButtonReplyMessage.selectedId;
+    } else if (m.listResponseMessage) {
+        id = m.listResponseMessage.singleSelectReply && m.listResponseMessage.singleSelectReply.selectedRowId;
+    } else if (m.interactiveResponseMessage) {
+        const flow = m.interactiveResponseMessage.nativeFlowResponseMessage;
+        if (flow && flow.paramsJson) {
+            try {
+                const p = JSON.parse(flow.paramsJson);
+                id = p.id || p.selectedId || p.row_id || p.rowId || null;
+            } catch { /* not JSON */ }
+        }
+    }
+    const ext = m.extendedTextMessage;
+    return {
+        id: id || null,
+        text: String(m.conversation || (ext && ext.text) || '').trim(),
+        quotedId: ext && ext.contextInfo ? ext.contextInfo.stanzaId : null,
+    };
+}
+
+async function onIncoming(conn, msg) {
+    if (!msg || !msg.message || !msg.key) return;
+    const { id, text, quotedId } = readReply(msg.message);
+
+    let choice = id && ID_RE.exec(id);                           // a button / list row of ours
+    if (!choice && ID_RE.test(text)) choice = ID_RE.exec(text);  // some libraries hand the id back as plain text
+    let session = null;
+    let byNumber = false;
+
+    if (!choice && quotedId && /^\d{1,2}$/.test(text)) {         // "2" typed as a reply to a menu
+        session = findSessionByMenu(quotedId);
+        const option = session && session.menu && session.menu.options[Number(text) - 1];
+        if (!option) return;
+        choice = ID_RE.exec(option.id);
+        byNumber = true;
+    }
+    if (!choice) return;
+
+    const dedupe = `${msg.key.remoteJid}|${msg.key.id}`;
+    if (seenReplies.has(dedupe)) return;
+    seenReplies.add(dedupe);
+    if (seenReplies.size > 500) seenReplies.delete(seenReplies.values().next().value);
+
+    const [, sid, step, value] = choice;
+    session = session || sessions.get(sid);
+    const chat = msg.key.remoteJid;
+
+    if (!session || Date.now() - session.touched > SESSION_TTL_MS) {
+        if (session) endSession(session);
+        if (!byNumber) await conn.sendMessage(chat, { text: MSG.expired }).catch(() => {});
+        return;
+    }
+
+    // in a group only the person who started the menu may use it
+    if (String(session.promptJid).endsWith('@g.us')) {
+        const who = msg.key.fromMe ? (conn.user && conn.user.id) : (msg.key.participant || msg.key.remoteJid);
+        if (!sameUser(who, session.owner)) return;
+    }
+    if (!STEP_HANDLERS[step] || session.step !== step || session.busy) return; // an old menu or a double tap
+
+    session.busy = true;
+    try {
+        await STEP_HANDLERS[step](conn, session, value);
+    } catch (err) {
+        console.error(`[ytaudl] "${step}" step failed:`, redact(err && err.message));
+        endSession(session);
+        await conn.sendMessage(session.promptJid, { text: MSG.error }).catch(() => {});
+    } finally {
+        session.busy = false;
+    }
+}
+
+// one listener per connection (the bot may create a new connection when it reconnects)
+const listening = new WeakSet();
+function ensureListener(conn) {
+    if (listening.has(conn)) return true;
+    if (!conn.ev || typeof conn.ev.on !== 'function') return false;
+    conn.ev.on('messages.upsert', (upsert) => {
+        for (const msg of (upsert && upsert.messages) || []) {
+            onIncoming(conn, msg).catch((err) => console.error('[ytaudl] button handler error:', redact(err && err.message)));
+        }
+    });
+    listening.add(conn);
+    return true;
+}
+
+// ─────────────── the menus ───────────────
+function searchMenu(query, results) {
+    const build = (titleMax, compact) => {
+        const lines = [`🔎 *YouTube results for:* ${shorten(query, 40)}`, ''];
+        results.forEach((v, i) => {
+            lines.push(`*${i + 1}.* ${shorten(v.title, titleMax)}`);
+            const meta = compact
+                ? [v.duration && `⏱ ${v.duration}`, v.author && `📺 ${shorten(v.author, 14)}`].filter(Boolean).join(' · ')
+                : videoLine(v);
+            if (meta) lines.push(`      ${meta}`);
+        });
+        return lines.join('\n');
+    };
+    // keep the message short enough for a button message (≈ 1000 characters with the hint line)
+    let max = 60;
+    let text = build(max, false);
+    while (text.length > 700 && max > 24) {
+        max -= 6;
+        text = build(max, false);
+    }
+    if (text.length > 800) text = build(28, true);
+    return {
+        title: '🔎 YouTube Search',
+        text,
+        numbered: false,
+        listLabel: 'Select video',
+        listTitle: 'Search results',
+        options: results.map((v, i) => ({
+            value: String(i),
+            label: `${i + 1}. ${shorten(v.title, 20)}`,
+            desc: [v.duration, v.author].filter(Boolean).join(' • '),
+        })),
+    };
+}
+
+function formatMenu(video) {
+    const meta = videoLine(video);
+    return {
+        title: '🎬 Choose format',
+        text: `🎬 *${shorten(video.title, 100)}*${meta ? `\n${meta}` : ''}\n\n*What do you want?*`,
+        options: [
+            { value: 'audio', label: '🎧 Audio' },
+            { value: 'voice', label: '🎤 Voice note' },
+            { value: 'video', label: '🎬 Video' },
+        ],
+    };
+}
+
+// null when every quality is bigger than MAX_VIDEO_MB
+function qualityMenu(session) {
+    const { info, video } = session;
+    const limit = MAX_VIDEO_MB * 1048576;
+    const options = [];
+    const hidden = [];
+
+    info.downloads.forEach((d, i) => {
+        if (d.size && d.size > limit) {
+            hidden.push(d.label);
+            return;
+        }
+        options.push({
+            value: String(i),
+            label: d.size ? `${d.label} • ${formatBytes(d.size)}` : d.label,
+            desc: d.size ? `MP4 • ${formatBytes(d.size)}` : 'MP4 video',
+        });
+    });
+    if (!options.length) return null;
+
+    const lines = [`🎞️ *${shorten(video.title || info.title || 'Video', 100)}*`];
+    if (info.author) lines.push(`📺 ${shorten(info.author, 40)}`);
+    lines.push('', '*Choose the video quality:*');
+    if (hidden.length) lines.push(`⚠️ Not offered (over ${MAX_VIDEO_MB} MB): ${hidden.join(', ')}`);
+    return { title: '🎞️ Video quality', text: lines.join('\n'), options, listLabel: 'Select quality', listTitle: 'Qualities' };
+}
+
+function playlistQualityMenu(playlist) {
+    return {
+        title: '🎞️ Video quality',
+        text:
+            `📋 *${shorten(playlist.title, 80)}*\n🔢 ${playlist.videos.length} videos\n\n` +
+            '*Choose the quality for all videos* (a video without it gets the closest lower quality):',
+        options: PLAYLIST_QUALITIES.map((n) => ({ value: String(n), label: `${n}p` })),
+        listLabel: 'Select quality',
+        listTitle: 'Qualities',
+    };
+}
+
+function sendAsMenu(session) {
+    const lines = [];
+    if (session.kind === 'plist') {
+        lines.push(
+            `📋 *${shorten(session.playlist.title, 80)}*`,
+            `🔢 ${session.playlist.videos.length} videos • ${session.wanted}p (or the closest quality each video has)`
+        );
+    } else {
+        const { video, info, download } = session;
+        lines.push(
+            `🎞️ *${shorten(video.title || info.title || 'Video', 100)}*`,
+            `📺 MP4 ${download.label}${download.size ? ` • 📦 ${formatBytes(download.size)}` : ''}`
+        );
+    }
+    lines.push('', '*How should it be sent?*', 'ℹ️ Document keeps the original file; Video plays inside the chat.');
+    return {
+        title: '📤 Send as',
+        text: lines.join('\n'),
+        options: [
+            { value: 'doc', label: '📄 Document' },
+            { value: 'vid', label: '🎬 Video' },
+        ],
+    };
+}
+
+// ─────────────── the steps of a menu conversation ───────────────
+// reserves the download slot of the target chat, closes the session and runs the job
+// (returns false — and keeps the menu usable — when the chat is busy)
+async function launch(conn, session, mode, run) {
+    const { promptJid, targetJid } = session;
+    const note = (text) => conn.sendMessage(promptJid, { text }).catch(() => {});
+
+    if (jobs.has(targetJid)) {
+        await note(MSG.busy(COMMAND_NAME[mode]));
+        return false;
+    }
+    if (jobs.size >= MAX_JOBS_AT_ONCE) {
+        await note(MSG.tooManyJobs);
+        return false;
+    }
+
+    const job = { cancelled: false };
+    jobs.set(targetJid, job);
+    endSession(session);
+
+    const quoted = targetJid === promptJid ? session.quoted : undefined;
+    const sayTarget = (text, quote = false) =>
+        conn.sendMessage(targetJid, { text }, quote && quoted ? { quoted } : undefined);
+
+    try {
+        if (targetJid !== promptJid) await note(`✅ Forwarding download to: ${targetJid}`);
+        await run(job, sayTarget, quoted);
+    } finally {
+        jobs.delete(targetJid);
+    }
+    return true;
+}
+
+// asks the API for the qualities of session.video, then shows the quality menu
+async function askQuality(conn, session) {
+    const { promptJid } = session;
+    const status = await conn
+        .sendMessage(promptJid, { text: MSG.qualityFetching }, { quoted: session.quoted })
+        .catch(() => null);
+    const statusKey = status && status.key;
+    const edit = async (text) => {
+        if (!(await editMessage(conn, promptJid, statusKey, text))) {
+            await conn.sendMessage(promptJid, { text }).catch(() => {});
+        }
+    };
+
+    let info;
+    try {
+        info = await fetchVideoInfo(session.video.id, {
+            onRetry: (attempt) => editMessage(
+                conn, promptJid, statusKey,
+                `🔄 *API is busy or timed out.*\nRetrying (${attempt}/${API_MAX_RETRIES})...`
+            ),
+        });
+        if (SHOW_VIDEO_SIZES) await attachSizes(info.downloads);
+    } catch (err) {
+        console.error('[ytaudl] could not get the qualities:', redact(err.message));
+        endSession(session);
+        return edit(MSG.qualitiesFailed(err.message));
+    }
+
+    session.info = info;
+    if (!session.video.title && info.title) session.video.title = info.title;
+
+    const menu = qualityMenu(session);
+    if (!menu) {
+        endSession(session);
+        return edit(MSG.allTooLarge);
+    }
+    await showMenu(conn, session, 'qual', menu);
+    // cosmetic only → do not make the menu wait for it
+    edit(`🎞️ *${shorten(session.video.title || session.video.id, 100)}*\n✅ Qualities found ⬇️`).catch(() => {});
+}
+
+const STEP_HANDLERS = {
+    // a search result was chosen → what should it become?
+    async pick(conn, session, value) {
+        const video = session.results && session.results[Number(value)];
+        if (!video) return;
+        session.video = video;
+        await showMenu(conn, session, 'fmt', formatMenu(video));
+    },
+
+    // audio / voice note start right away, video continues with the quality
+    async fmt(conn, session, value) {
+        if (value === 'video') return askQuality(conn, session);
+        const mode = value === 'voice' ? 'voice' : 'audio';
+        const { video, targetJid } = session;
+        await launch(conn, session, mode, (job, sayTarget, quoted) =>
+            downloadOne(conn, targetJid, quoted, video.id, sayTarget, mode, { title: video.title }));
+    },
+
+    // video quality (single video)
+    async qual(conn, session, value) {
+        const download = session.info && session.info.downloads[Number(value)];
+        if (!download) return;
+        session.download = download;
+        await showMenu(conn, session, 'as', sendAsMenu(session));
+    },
+
+    // video quality (playlist: one choice for all videos)
+    async pq(conn, session, value) {
+        session.wanted = Number(value) || 720;
+        await showMenu(conn, session, 'as', sendAsMenu(session));
+    },
+
+    // document or video → download and send
+    async as(conn, session, value) {
+        const asDocument = value === 'doc';
+        const { targetJid } = session;
+
+        if (session.kind === 'plist') {
+            const { playlist, wanted } = session;
+            await launch(conn, session, 'video', (job, sayTarget, quoted) =>
+                downloadPlaylist(conn, targetJid, quoted, null, job, sayTarget, 'video', null, { playlist, wanted, asDocument }));
+            return;
+        }
+        const { video, info, download } = session;
+        await launch(conn, session, 'video', (job, sayTarget, quoted) =>
+            downloadOne(conn, targetJid, quoted, video.id, sayTarget, 'video', {
+                info, download, asDocument, title: video.title,
+            }));
+    },
+};
+
+// ═══════════════ command handlers ═══════════════
 const jobs = new Map();
 
-async function handleCommand(conn, mek, m, { from, q }, mode) {
+// .ytaudl / .ytvcdl / .ytvdl  (mode: 'audio' | 'voice' | 'video')
+async function handleCommand(conn, mek, m, opts, mode) {
+    const { from, q } = opts;
+    const cmdName = COMMAND_NAME[mode];
     const say = (text, quote = false) =>
         conn.sendMessage(from, { text }, quote ? { quoted: mek } : undefined);
 
@@ -1242,7 +2335,7 @@ async function handleCommand(conn, mek, m, { from, q }, mode) {
         const possibleJid = extras.find((a) => /@(g\.us|s\.whatsapp\.net|lid)$/.test(a));
         const wantsAll = extras.some((a) => /^(all|mix|playlist)$/i.test(a));
 
-        if (!arg) return await say(MSG.usage, true);
+        if (!arg) return await say(MSG.usage(cmdName), true);
 
         let targetJid = from;
         if (possibleJid) {
@@ -1267,12 +2360,17 @@ async function handleCommand(conn, mek, m, { from, q }, mode) {
         }
         if (!videoId && !listId) return await say(MSG.invalid, true);
 
-        if (jobs.has(targetJid)) return await say(MSG.busy, true);
+        if (jobs.has(targetJid)) return await say(MSG.busy(cmdName), true);
         if (jobs.size >= MAX_JOBS_AT_ONCE) return await say(MSG.tooManyJobs, true);
+
+        // video: the quality / document-or-video buttons come first, the download starts after the last choice
+        if (mode === 'video') {
+            return await startVideoMenu(conn, mek, opts, { videoId, listId, linkVideoId, targetJid });
+        }
 
         const job = { cancelled: false };
         jobs.set(targetJid, job);
-        
+
         const mekTarget = (targetJid === from) ? mek : undefined;
         const sayTarget = (text, quote = false) =>
             conn.sendMessage(targetJid, { text }, (quote && mekTarget) ? { quoted: mekTarget } : undefined);
@@ -1293,7 +2391,102 @@ async function handleCommand(conn, mek, m, { from, q }, mode) {
     }
 }
 
+// .ytvdl: single video → quality buttons; playlist / Mix → one quality for all videos
+async function startVideoMenu(conn, mek, opts, { videoId, listId, linkVideoId, targetJid }) {
+    const { from } = opts;
+    if (!ensureListener(conn)) return conn.sendMessage(from, { text: MSG.noButtons }, { quoted: mek });
+    const base = { promptJid: from, targetJid, owner: senderOf(opts, mek), quoted: mek };
+
+    if (videoId) {
+        const session = createSession({ ...base, kind: 'single', video: { id: videoId, title: '' } });
+        return askQuality(conn, session);
+    }
+
+    const status = await conn.sendMessage(from, { text: MSG.playlistFetching }, { quoted: mek }).catch(() => null);
+    const edit = async (text) => {
+        if (!(await editMessage(conn, from, status && status.key, text))) {
+            await conn.sendMessage(from, { text }).catch(() => {});
+        }
+    };
+
+    let playlist;
+    try {
+        playlist = await fetchPlaylist(listId, MAX_VIDEO_PLAYLIST, linkVideoId);
+    } catch (err) {
+        console.error('[ytaudl] playlist failed:', redact(err.message));
+        return edit(MSG.playlistFailed(err.message));
+    }
+    if (!playlist.videos.length) return edit(MSG.playlistEmpty);
+
+    const session = createSession({ ...base, kind: 'plist', playlist });
+    await showMenu(conn, session, 'pq', playlistQualityMenu(playlist));
+    await edit(`📋 *${shorten(playlist.title, 80)}* — ${playlist.videos.length} videos ✅`);
+}
+
+// .ytdl <words | link> [jid]: search → pick a video → Audio / Voice note / Video
+async function handleSearchCommand(conn, mek, m, opts) {
+    const { from } = opts;
+    const say = (text, quote = false) =>
+        conn.sendMessage(from, { text }, quote ? { quoted: mek } : undefined);
+
+    try {
+        const words = String(opts.q || '').trim().split(/\s+/).filter(Boolean);
+        let targetJid = from;
+        if (words.length && /@(g\.us|s\.whatsapp\.net|lid)$/.test(words[words.length - 1])) {
+            targetJid = words.pop();
+        }
+        const query = words.join(' ');
+
+        if (!query) return await say(MSG.searchUsage, true);
+        if (!ensureListener(conn)) return await say(MSG.noButtons, true);
+
+        const base = { promptJid: from, targetJid, owner: senderOf(opts, mek), quoted: mek };
+
+        // a YouTube link needs no search → straight to the format buttons
+        const linkId = extractVideoId(query);
+        if (linkId) {
+            const title = await fetchTitle(linkId);
+            const video = { id: linkId, title: title || `YouTube video ${linkId}`, author: '', duration: '', views: 0 };
+            const session = createSession({ ...base, kind: 'single', video });
+            return await showMenu(conn, session, 'fmt', formatMenu(video));
+        }
+        if (/^(https?:\/\/)?((www|m|music)\.)?(youtube\.com|youtu\.be)\//i.test(query)) {
+            return await say(MSG.searchPlaylistLink, true);
+        }
+
+        const status = await conn.sendMessage(from, { text: MSG.searching(query) }, { quoted: mek }).catch(() => null);
+        const edit = async (text) => {
+            if (!(await editMessage(conn, from, status && status.key, text))) await say(text).catch(() => {});
+        };
+
+        let results;
+        try {
+            results = await searchYouTube(query);
+        } catch (err) {
+            console.error('[ytaudl] search failed:', redact(err.message));
+            return await edit(MSG.searchFailed(err.message));
+        }
+        if (!results.length) return await edit(MSG.noResults(query));
+
+        const session = createSession({ ...base, kind: 'search', results });
+        await showMenu(conn, session, 'pick', searchMenu(query, results));
+        await edit(`🔎 *${shorten(query, 60)}* — ${results.length} results found ⬇️`);
+    } catch (err) {
+        console.error('[ytaudl] error:', redact(err && err.message));
+        say(MSG.error).catch(() => {});
+    }
+}
+
 // ─────────────── commands ───────────────
+cmd({
+    pattern: 'ytdl',
+    desc: 'Search YouTube, pick a video with buttons and download it as audio / voice note / video',
+    category: 'download',
+    react: '🔎',
+    filename: __filename,
+},
+(conn, mek, m, opts) => handleSearchCommand(conn, mek, m, opts));
+
 cmd({
     pattern: 'ytaudl',
     desc: 'Download a YouTube video or playlist as audio',
@@ -1312,4 +2505,21 @@ cmd({
 },
 (conn, mek, m, opts) => handleCommand(conn, mek, m, opts, 'voice'));
 
-module.exports = { extractVideoId, extractPlaylistId, fetchPlaylist, downloadToFile };
+cmd({
+    pattern: 'ytvdl',
+    desc: 'Download a YouTube video or playlist as a video (choose quality + document / video)',
+    category: 'download',
+    react: '🎬',
+    filename: __filename,
+},
+(conn, mek, m, opts) => handleCommand(conn, mek, m, opts, 'video'));
+
+module.exports = {
+    extractVideoId,
+    extractPlaylistId,
+    fetchPlaylist,
+    downloadToFile,
+    searchYouTube,
+    fetchVideoInfo,
+    downloadVideoToFile,
+};
