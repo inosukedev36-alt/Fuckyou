@@ -36,7 +36,7 @@ module.exports = {
     // 👇 Anti-Link සහ Anti-Bot සක්‍රීය කිරීම 👇
     ANTI_LINK: false,
     ANTI_BOT: true,
-    ANTI_COMMAND_DELETE: true, // Private mode එකේදී non-sudo commands delete කරනවා
+    ANTI_COMMAND_DELETE: false, // Private mode එකේදී non-sudo commands delete කරනවා
 
     // 👇 Known Bot Signatures (හඳුනාගැනීමට) 👇
     BOT_SIGNATURES: [
@@ -55,7 +55,7 @@ module.exports = {
         // She has ONE boyfriend: the owner (config.OWNER_NUMBER / OWNER_LID / the paired number).
         // Everybody else is a normal, polite acquaintance: no pet names, no flirting, no jealousy.
         BOYFRIEND_NUMBERS: [94716666886,94712805832,94752805835],        // extra numbers (digits only) that she should also treat as her boyfriend
-        ASK_STRANGERS: true,          // ask everybody else for name / age / birthday too? (false = only her boyfriend is asked)
+        ASK_STRANGERS: false,          // ask everybody else for name / age / birthday too? (false = only her boyfriend is asked)
         STRANGERS_ADMIT_AI: false,     // someone who is not her boyfriend and sincerely asks "are you an AI?" gets an honest answer
         MEMORY_HOURS: 24,             // how long every message of a user is remembered
         CONFIRM_SECONDS: 60,          // how long she waits for "yes" before cancelling kick/promote/etc.
@@ -69,7 +69,7 @@ module.exports = {
     },
 
     OWNER_ONLY_COMMANDS: [
-         'unmute', 'addsudo', 'delsudo', 'boom',
+         'remove', 'addsudo', 'delsudo', 'boom',
         'eval', 'ev', 'restart', 'update', 
         'kick', 'add', 'promote', 'demote'
     ],
