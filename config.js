@@ -69,7 +69,7 @@ module.exports = {
     },
 
     OWNER_ONLY_COMMANDS: [
-        'shh', 'mute', 'unmute', 'addsudo', 'delsudo', 'boom',
+         'unmute', 'addsudo', 'delsudo', 'boom',
         'eval', 'ev', 'restart', 'update', 
         'kick', 'add', 'promote', 'demote'
     ],
