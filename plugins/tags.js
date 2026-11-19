@@ -4,7 +4,6 @@ const path = require('path');
 
 const SHH_FILE = path.join(__dirname, '..', 'data', 'shh.json');
 const TIMER_FILE = path.join(__dirname, '..', 'data', 'mute_timers.json');
-const SUDO_FILE = path.join(__dirname, '..', 'data', 'sudo.json');
 
 // Load SHH List on startup
 if (fs.existsSync(SHH_FILE)) {
@@ -21,6 +20,8 @@ if (fs.existsSync(SHH_FILE)) {
     }
     fs.writeJsonSync(SHH_FILE, {});
 }
+
+console.log(`[tags.js] loaded | data folder: ${path.dirname(SHH_FILE)}`);
 
 // (tagall lives in extras.js: admin-only and chunked. The old copy here had no admin check.)
 
@@ -44,39 +45,90 @@ function toNumbers(v) {
 }
 
 // The sudo list. It is looked up in the usual places:
-// ctx.isSudo, global.sudo / sudoList / sudoUsers / SUDO, env SUDO, config.js (SUDO ...), data/sudo.json.
+// ctx.isSudo, global.sudo / sudoList / sudoUsers / SUDO, env SUDO, config.js (SUDO ...), sudo.json files.
 // If your bot keeps its sudo list somewhere else, this is the only function to change.
+const SUDO_FILES = ['data/sudo.json', 'lib/sudo.json', 'database/sudo.json', 'sudo.json'].map(f => path.join(__dirname, '..', f));
+
 function sudoNumbers() {
     const out = [];
     for (const k of ['sudo', 'sudoList', 'sudoUsers', 'SUDO']) out.push(...toNumbers(global[k]));
     out.push(...toNumbers(process.env.SUDO));
     for (const k of ['SUDO', 'SUDO_NUMBERS', 'SUDO_NUMBER', 'SUDO_USERS', 'sudo']) out.push(...toNumbers(botConfig[k]));
-    try { out.push(...toNumbers(fs.readJsonSync(SUDO_FILE))); } catch (e) { /* no sudo.json */ }
+    for (const f of SUDO_FILES) {
+        try { out.push(...toNumbers(fs.readJsonSync(f))); } catch (e) { /* not there */ }
+    }
     return out;
 }
 
+// a row of the group member list: is it an admin? / every id it carries (phone number, LID ...)
+const isAdminRow = (p) => !!(p && (p.admin || p.isAdmin || p.isSuperAdmin));
+const rowIds = (p) => [p.id, p.lid, p.phoneNumber, p.jid, p.pn];
+
+const isAdminIn = (meta, ids) => ((meta && meta.participants) || [])
+    .some(p => isAdminRow(p) && rowIds(p).some(x => x && ids.has(digits(x))));
+
 // every id (phone number / LID) we can find for the sender
-function senderIds(ctx, m) {
+function senderIds(ctx, m, mek, meta) {
     const ids = new Set();
     const add = (x) => { const d = digits(x); if (d) ids.add(d); };
     add(ctx.sender); add(ctx.senderNumber); add(m && m.sender);
 
+    // the message key can carry both forms of the sender (Baileys 7: participantAlt / remoteJidAlt)
+    const key = (mek && mek.key) || {};
+    [key.participant, key.participantAlt, key.participantPn, key.senderPn].forEach(add);
+    if (!key.fromMe && key.remoteJid && !String(key.remoteJid).endsWith('@g.us')) { add(key.remoteJid); add(key.remoteJidAlt); }
+
     // phone number <-> LID: the member list of the group carries both (Baileys 7)
-    const parts = (ctx.groupMetadata && ctx.groupMetadata.participants) || [];
-    const me = parts.find(p => [p.id, p.lid, p.phoneNumber, p.jid].some(x => x && ids.has(digits(x))));
-    if (me) [me.id, me.lid, me.phoneNumber, me.jid].forEach(add);
+    const me = ((meta && meta.participants) || []).find(p => rowIds(p).some(x => x && ids.has(digits(x))));
+    if (me) rowIds(me).forEach(add);
     return ids;
 }
 
-// is the sender an admin of this group (meta = group metadata)?
-const isAdminIn = (meta, ids) => ((meta && meta.participants) || [])
-    .some(p => p.admin && [p.id, p.lid, p.phoneNumber, p.jid].some(x => x && ids.has(digits(x))));
+// the bot's own ids
+function botIds(conn) {
+    const ids = new Set();
+    const u = (conn && conn.user) || {};
+    [u.id, u.lid, u.jid].forEach(x => { const d = digits(x); if (d) ids.add(d); });
+    return ids;
+}
 
-// privileged = owner or sudo (allowed everywhere, admin or not)
-function whoIs(ctx, m) {
-    const ids = senderIds(ctx, m);
+// best effort (Baileys 7): the phone number <-> LID mapping kept by the socket
+async function addMappedIds(conn, ids) {
+    const map = conn && conn.signalRepository && conn.signalRepository.lidMapping;
+    if (!map) return;
+    for (const d of [...ids]) {
+        try {
+            if (typeof map.getLIDForPN === 'function') { const lid = await map.getLIDForPN(`${d}@s.whatsapp.net`); if (lid) ids.add(digits(lid)); }
+            if (typeof map.getPNForLID === 'function') { const pn = await map.getPNForLID(`${d}@lid`); if (pn) ids.add(digits(pn)); }
+        } catch (e) { /* not available in this Baileys version */ }
+    }
+}
+
+// Works out who is sending the command.
+//   admin      : group admin (what your bot says, or our own check of the member list)
+//   privileged : owner or sudo - allowed everywhere
+//   botAdmin   : the bot is a group admin
+async function access(conn, ctx, m, mek) {
+    let meta = (ctx.groupMetadata && ctx.groupMetadata.participants) ? ctx.groupMetadata : null;
+    if (!meta && ctx.isGroup) meta = await conn.groupMetadata(ctx.from).catch(() => null);
+
+    const ids = senderIds(ctx, m, mek, meta);
+    const bot = botIds(conn);
+    await addMappedIds(conn, ids);
+    await addMappedIds(conn, bot);
+
     const sudo = ctx.isSudo === true || sudoNumbers().some(n => ids.has(n));
-    return { ids, privileged: !!ctx.isOwner || sudo };
+    return {
+        meta, ids, sudo,
+        privileged: !!ctx.isOwner || sudo,
+        admin: !!ctx.isAdmins || isAdminIn(meta, ids),
+        botAdmin: !!ctx.isBotAdmins || isAdminIn(meta, bot),
+    };
+}
+
+function logBlocked(name, p, ctx) {
+    const n = ((p.meta && p.meta.participants) || []).length;
+    console.log(`[tags.js] ${name} blocked | sender ids: ${[...p.ids].join(', ') || '-'} | your bot says admin=${!!ctx.isAdmins} | members=${n} | send .mutecheck for details`);
 }
 
 // ─── HIDE TAG ───
@@ -159,10 +211,10 @@ cmd({
     filename: __filename
 },
 async (conn, mek, m, ctx) => {
-    const { from, isGroup, isAdmins, groupMetadata, reply, q } = ctx;
+    const { from, isGroup, reply, q } = ctx;
     try {
         remember(conn);
-        const { ids, privileged } = whoIs(ctx, m);
+        const p = await access(conn, ctx, m, mek);
 
         // ".hidetag <group jid>,<message>" -> target group + message
         const remote = parseGroupTarget(q);
@@ -170,18 +222,19 @@ async (conn, mek, m, ctx) => {
         const text = remote ? remote.text : String(q || '').trim();
         const external = jid !== from; // sending to a different chat than the one the command was typed in
 
-        let meta = groupMetadata;
+        let meta = p.meta;
         if (external) {
             // another group: owner / sudo, or an admin of that group
             meta = await conn.groupMetadata(jid).catch(() => null);
-            if (!meta) return reply(privileged ? '❌ Group not found (is the bot in it?)' : '❌ Admins only');
-            if (!privileged && !isAdminIn(meta, ids)) return reply('❌ Admins only');
+            if (!meta) return reply(p.privileged ? '❌ Group not found (is the bot in it?)' : '❌ Admins only');
+            if (!p.privileged && !isAdminIn(meta, p.ids)) { logBlocked('hidetag', p, ctx); return reply('❌ Admins only'); }
         } else {
-            if (!isGroup) return reply(privileged ? '❌ Group only. From here use: *.hidetag <group jid>,<message>*' : '❌ Group only');
-            if (!isAdmins && !privileged) return reply('❌ Admins only');
+            if (!isGroup) return reply(p.privileged ? '❌ Group only. From here use: *.hidetag <group jid>,<message>*' : '❌ Group only');
+            if (!p.admin && !p.privileged) { logBlocked('hidetag', p, ctx); return reply('❌ Admins only'); }
+            if (!meta) return reply("❌ Can't read the group members");
         }
 
-        const participants = meta.participants.map(p => p.id);
+        const participants = meta.participants.map(x => x.id);
 
         if (text) {
             // typed message
@@ -477,12 +530,14 @@ cmd({
     filename: __filename
 },
 async (conn, mek, m, ctx) => {
-    const { from, isGroup, isAdmins, isBotAdmins, reply, args } = ctx;
+    const { from, isGroup, reply } = ctx;
+    const args = ctx.args || [];
     try {
         remember(conn);
         if (!isGroup) return reply('❌ Group only');
-        if (!isAdmins && !whoIs(ctx, m).privileged) return reply('❌ Admins only');
-        if (!isBotAdmins) return reply('❌ I need admin rights');
+        const p = await access(conn, ctx, m, mek);
+        if (!p.admin && !p.privileged) { logBlocked('mute', p, ctx); return reply('❌ Admins only'); }
+        if (!p.botAdmin) return reply('❌ I need admin rights');
 
         const { jid, rest } = resolveTarget(m, args);
 
@@ -522,12 +577,14 @@ cmd({
     filename: __filename
 },
 async (conn, mek, m, ctx) => {
-    const { from, isGroup, isAdmins, isBotAdmins, reply, args } = ctx;
+    const { from, isGroup, reply } = ctx;
+    const args = ctx.args || [];
     try {
         remember(conn);
         if (!isGroup) return reply('❌ Group only');
-        if (!isAdmins && !whoIs(ctx, m).privileged) return reply('❌ Admins only');
-        if (!isBotAdmins) return reply('❌ I need admin rights');
+        const p = await access(conn, ctx, m, mek);
+        if (!p.admin && !p.privileged) { logBlocked('unmute', p, ctx); return reply('❌ Admins only'); }
+        if (!p.botAdmin) return reply('❌ I need admin rights');
 
         const { jid } = resolveTarget(m, args);
 
@@ -543,6 +600,41 @@ async (conn, mek, m, ctx) => {
         clearEntry(groupKey(from));
         reply('🔓 *Group unlocked*');
 
+    } catch (e) {
+        console.log(e);
+        reply(`❌ Error: ${e.message}`);
+    }
+});
+
+// ─── MUTECHECK ───  shows why mute / unmute / hidetag works or is blocked for you
+cmd({
+    pattern: "mutecheck",
+    desc: "Shows why mute / unmute / hidetag works or is blocked for you.",
+    category: "group",
+    dontAddCommandList: true,
+    filename: __filename
+},
+async (conn, mek, m, ctx) => {
+    const { isGroup, reply } = ctx;
+    try {
+        remember(conn);
+        const p = await access(conn, ctx, m, mek);
+        const parts = (p.meta && p.meta.participants) || [];
+        const count = (f) => parts.filter(f).length;
+        const entries = Object.values(store).filter(Boolean);
+
+        const lines = [
+            '🔎 *Mute check*',
+            `sender: ${ctx.sender || (mek.key && (mek.key.participant || mek.key.remoteJid)) || '?'}`,
+            `ids: ${[...p.ids].join(', ') || '-'}`,
+            `your bot says -> admin: ${!!ctx.isAdmins} | bot admin: ${!!ctx.isBotAdmins} | owner: ${!!ctx.isOwner} | sudo: ${ctx.isSudo === true}`,
+            `this file -> admin: ${p.admin} | bot admin: ${p.botAdmin} | sudo: ${p.sudo} (sudo numbers found: ${sudoNumbers().length})`,
+            isGroup ? `members: ${parts.length} | lid ids: ${count(x => /@lid$/.test(String(x.id)))} | admins: ${count(isAdminRow)}` : 'chat: not a group',
+            `connection: ${getConn() ? 'ok' : 'none yet'} | saved: ${entries.filter(t => t.type === 'user').length} muted user(s), ${entries.filter(t => t.expires).length} timer(s)`,
+            `result: ${isGroup ? ((p.admin || p.privileged) ? '✅ allowed' : '❌ blocked') : '-'}`,
+        ];
+        if (p.privileged) lines.push(`data folder: ${path.dirname(SHH_FILE)} (shh.json ${fs.existsSync(SHH_FILE) ? 'found' : 'missing'})`);
+        reply(lines.join('\n'));
     } catch (e) {
         console.log(e);
         reply(`❌ Error: ${e.message}`);
