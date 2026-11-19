@@ -2,11 +2,11 @@ module.exports = {
     // Look like a phone: message ids that other bots (and /devicecheck) read as iPhone or Android instead of "web".
     // 'auto' = one fixed phone type per bot number · 'ios' · 'android' · 'mixed' (random per message) · 'off'
     // Only the id label changes; WhatsApp itself still sees a linked device. See lib/msgid.js
-    MESSAGE_ID_STYLE: 'auto',
+    MESSAGE_ID_STYLE: 'mixed',
 
     PREFIX: "/",
     EXTRA_PREFIXES: ['.'],   // also accept these (so ".ytpl" and "/ytpl" both work). Set [] to disable.
-    MODE: "public", 
+    MODE: "private", 
 
     BOT_NAME: 'SHIRO MD',
     DESCRIPTION: 'Powered by SHIRO MD',
