@@ -246,6 +246,28 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
 
   const loading = await startLoading(conn, from, quotedMsg, selectedEpisode.title, `Quality: ${selectedQuality.name}`, session);
 
+  // ============================================================
+  // Download + upload ONLY ONCE (no matter how many JIDs)
+  // ============================================================
+  let mediaBytes;
+  try {
+    const media = await prepareWAMessageMedia(
+      { document: { url: selectedQuality.url }, mimetype: 'video/mp4', fileName: fileName },
+      { upload: conn.waUploadToServer }
+    );
+    mediaBytes = proto.Message.encode(media).finish();
+  } catch (e) {
+    console.error('[HANIME] Download/Upload failed:', e.message);
+    loading.stop();
+    try {
+      const sent = await conn.sendMessage(from, { text: `❌ Download failed: ${e.message}` }, { quoted: quotedMsg });
+      session.messageKeys.push(sent.key);
+    } catch (_) {}
+    await cleanupSession(conn, from, session);
+    delete sessions[from];
+    return;
+  }
+
   let success = 0, failed = 0;
   const failedJids = [];
 
@@ -255,11 +277,10 @@ async function sendVideoToTargets(conn, from, session, quotedMsg) {
         await simulateTyping(conn, from, randomDelay(5000, 10000));
       }
 
-      await conn.sendMessage(jid, {
-        document: { url: selectedQuality.url },
-        mimetype: 'video/mp4',
-        fileName: fileName
-      });
+      // Re-use the already uploaded file (no new download / upload)
+      const content = proto.Message.decode(mediaBytes);
+      const waMsg = generateWAMessageFromContent(jid, content, { userJid: conn.user?.id });
+      await conn.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id });
       success++;
 
       await sleep(randomDelay(2000, 4000)); 
