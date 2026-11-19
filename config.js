@@ -5,8 +5,8 @@ module.exports = {
     MESSAGE_ID_STYLE: 'mixed',
 
     PREFIX: "/",
-    EXTRA_PREFIXES: ['.'],   // also accept these (so ".ytpl" and "/ytpl" both work). Set [] to disable.
-    MODE: "private", 
+    EXTRA_PREFIXES: [],   // also accept these (so ".ytpl" and "/ytpl" both work). Set [] to disable.
+    MODE: "public", 
 
     BOT_NAME: 'SHIRO MD',
     DESCRIPTION: 'Powered by SHIRO MD',
@@ -69,7 +69,7 @@ module.exports = {
     },
 
     OWNER_ONLY_COMMANDS: [
-         'remove', 'addsudo', 'delsudo', 'boom',
+         'remove', 'mute', 'unmute', 'addsudo', 'delsudo', 'boom',
         'eval', 'ev', 'restart', 'update', 
         'kick', 'add', 'promote', 'demote'
     ],
