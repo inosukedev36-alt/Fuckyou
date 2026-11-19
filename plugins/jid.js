@@ -1,31 +1,37 @@
 // plugins/jid.js
 //
-//  /jid                      → inbox: that user's JID | group: the group's JID
-//  /jid 94711234567          → that number's JID
-//  /jid <channel link>       → the channel's JID (...@newsletter)
-//  (reply to a message) /jid → the JID of the person you replied to
-//  /jid all                  → JIDs of every member in the group
+//  .jid                      → inbox: that user's JID + LID | group: the group's JID
+//  .jid 94711234567          → that number's JID + LID
+//  .jid <channel link>       → the channel's JID (...@newsletter)
+//  (reply to a message) .jid → the JID + LID of the person you replied to
+//  .jid all                  → JIDs of every member in the group
 //
-//  හැම output එකකටම "📋 Copy JID" button එකක් එනවා – tap කළාම JID එක කෙලින්ම copy වෙනවා.
+//  හැම output එකකටම "📋 Copy" button එකක් එනවා – tap කළාම JID / LID එක කෙලින්ම copy වෙනවා.
 
 const { cmd } = require('../command')
 
-// true කළොත් `/jid all` පාවිච්චි කරන්න පුළුවන් group admins / owner ට විතරයි
+// bot ගේ prefix එක (usage message එකේ පෙන්නන්න විතරයි)
+const PREFIX = '.'
+
+// true කළොත් `.jid all` පාවිච්චි කරන්න පුළුවන් group admins / owner ට විතරයි
 const ALL_ADMINS_ONLY = false
 
 // Copy button එක යවන විදිහ:
 //   'auto'               → bot එකේ Baileys එක බලලා තනියෙන්ම තෝරගන්නවා (නිර්දේශිතයි)
+//   'nativeFlow'         → sendMessage({ nativeFlow })           (@dnuzi/baileys, @itsliaaa/baileys වලට)
 //   'interactiveButtons' → sendMessage({ interactiveButtons })   (@itsukichan වගේ fork වලට)
-//   'nativeFlow'         → sendMessage({ nativeFlow })           (@itsliaaa වගේ fork වලට)
 //   'relay'              → අතින් හදලා relayMessage කරනවා          (vanilla @whiskeysockets/baileys වලට)
 // Button එක නොපෙනුනොත් මේවා එකින් එක try කරලා බලන්න.
 const BUTTON_MODE = 'auto'
 
-// button message එකේ යටින් පෙන්නන footer එක (ඕනේ නැත්නම් '' ලෙස තියන්න)
+// button message එකේ යටින් පෙන්නන කුඩා footer එක (උදා: 'Rashu-XMD'). හිස් නම් footer එකක් නෑ.
 const FOOTER = ''
 
-// `/jid all` list එක මේ characters ගණනට වඩා දිග නම් button එක දාන්නේ නෑ (plain text විතරක් යනවා)
+// `.jid all` list එක මේ characters ගණනට වඩා දිග නම් button එක දාන්නේ නෑ (plain text විතරක් යනවා)
 const MAX_COPY_LENGTH = 5000
+
+// LID ↔ number lookup එකකට රැඳී ඉන්න උපරිම වෙලාව (ms)
+const LOOKUP_TIMEOUT = 6000
 
 // WhatsApp monospace block (tap කරලා copy කරන්න ලේසියි)
 const mono = (text) => '```' + text + '```'
@@ -33,13 +39,126 @@ const mono = (text) => '```' + text + '```'
 // phone-number JID එකක්ද? (@lid නෙවෙයි)
 const isPN = (jid) => !!jid && jid.endsWith('@s.whatsapp.net')
 
+// LID එකක්ද?
+const isLID = (jid) => !!jid && jid.endsWith('@lid')
+
+// device කෑල්ල අයින් කරනවා  (94711234567:5@s.whatsapp.net → 94711234567@s.whatsapp.net)
+const clean = (jid) => (jid ? String(jid).replace(/:\d+@/, '@') : null)
+
 // group member කෙනෙකුගේ number JID එක
 // (අලුත් Baileys වල LID group වලදී real number එක තියෙන්නේ `phoneNumber` එකේ)
 const memberJid = (p) => p.phoneNumber || p.jid || p.id
 
+const withTimeout = (promise, ms = LOOKUP_TIMEOUT) => {
+    let timer
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms) })
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+
+// ───────────────────────── Message design ─────────────────────────
+//
+//   ╭━━━〔 🆔 *USER INFO* 〕━━━
+//   ┃
+//   ┃ 👤 *Replied User*
+//   ┃
+//   ┃ 📱 *JID*
+//   ┃ ```94711234567@s.whatsapp.net```
+//   ┃
+//   ┃ 🔗 *LID*
+//   ┃ ```123456789012345@lid```
+//   ┃
+//   ╰━━━━━━━━━━━━━━━━
+
+// ලස්සන box එකක් හදනවා (lines වල හිස් '' = හිස් පේළියක්)
+const box = (title, lines) => [
+    `╭━━━〔 ${title} 〕━━━`,
+    '┃',
+    ...lines.map((l) => (l ? '┃ ' + l : '┃')),
+    '┃',
+    '╰━━━━━━━━━━━━━━━━'
+].join('\n')
+
+// user කෙනෙකුගේ JID + LID card එක (නැති එකට "not found")
+const userBox = (who, { jid, lid }, extra = []) => box('🆔 *USER INFO*', [
+    who,
+    ...extra,
+    '',
+    '📱 *JID*',
+    jid ? mono(jid) : '_not found_',
+    '',
+    '🔗 *LID*',
+    lid ? mono(lid) : '_not found_'
+])
+
+// හොයාගත්ත ඒවාට විතරක් Copy button එකක්
+const userButtons = ({ jid, lid }) => [
+    jid && { label: '📋 Copy JID', copy: jid },
+    lid && { label: '📋 Copy LID', copy: lid }
+].filter(Boolean)
+
+const groupBox = (meta, jid) => box('👥 *GROUP INFO*', [
+    ...(meta ? [`🏷️ *Name* : ${meta.subject}`, `👤 *Members* : ${meta.participants?.length ?? '?'}`, ''] : []),
+    '🆔 *Group JID*',
+    mono(jid)
+])
+
+const channelBox = (name, jid) => box('📢 *CHANNEL INFO*', [
+    ...(name ? [`🏷️ *Name* : ${name}`, ''] : []),
+    '🆔 *Channel JID*',
+    mono(jid)
+])
+
+const usageBox = () => box('📖 *USAGE*', [
+    `• *${PREFIX}jid* ➜ this chat`,
+    `• *${PREFIX}jid all* ➜ every group member`,
+    `• *${PREFIX}jid 94711234567* ➜ a number`,
+    `• *${PREFIX}jid <channel link>* ➜ a channel`,
+    `• reply to a message + *${PREFIX}jid* ➜ that user`
+])
+
+
+// ───────────────────────── JID + LID ─────────────────────────
+
+// JID එකක් හෝ LID එකක් දුන්නාම → { jid, lid } දෙකම හොයලා දෙනවා (හොයාගන්න බැරි එක null)
+async function resolveIds(conn, id, { meta, alt } = {}) {
+    id = clean(id)
+    const ids = { jid: null, lid: null }
+    if (!id) return ids
+
+    // දන්න JID / LID එකකින් අඩු එක පුරවනවා
+    const fill = (x) => {
+        x = clean(x)
+        if (isPN(x) && !ids.jid) ids.jid = x
+        if (isLID(x) && !ids.lid) ids.lid = x
+    }
+    fill(id)
+    fill(alt)
+
+    // 1) group members ලගේ data (LID group → phoneNumber, number group → lid)
+    const p = meta?.participants?.find((x) => [x.id, x.lid, x.phoneNumber, x.jid].map(clean).includes(id))
+    if (p) [p.id, p.lid, p.phoneNumber, p.jid].forEach(fill)
+
+    // 2) bot ගේම account එක
+    const me = conn.user || {}
+    if ([me.id, me.lid].map(clean).includes(id)) [me.id, me.lid].forEach(fill)
+
+    // 3) Baileys ගේ LID ↔ number mapping
+    const map = conn.signalRepository?.lidMapping
+    if (map) {
+        if (ids.lid && !ids.jid) {
+            try { fill(await withTimeout(map.getPNForLID(ids.lid))) } catch (_) { /* not found */ }
+        }
+        if (ids.jid && !ids.lid) {
+            try { fill(await withTimeout(map.getLIDForPN(ids.jid))) } catch (_) { /* not found */ }
+        }
+    }
+    return ids
+}
+
 
 // ───────────────────────── Copy button ─────────────────────────
-// WhatsApp native-flow `cta_copy` button එකක් (.pair command එකේ "Copy Code" button එකම වර්ගයයි)
+// WhatsApp native-flow `cta_copy` button (.pair command එකේ "Copy Code" button එකම වර්ගයයි)
 
 // bot එක පාවිච්චි කරන Baileys එකම හොයාගන්නවා (package නම මොකක් වුනත් හරි)
 let _baileys
@@ -71,8 +190,8 @@ async function getBaileys() {
 
 // ඒ Baileys එකේ button API එක මොකක්ද? (dry-run එකකින් බලනවා – message එකක් යවන්නේ නෑ)
 const PROBES = {
-    interactiveButtons: { text: '.', interactiveButtons: [{ name: 'cta_copy', buttonParamsJson: '{}' }] },
-    nativeFlow: { text: '.', nativeFlow: [{ text: '.', copy: '.' }] }
+    nativeFlow: { text: '.', nativeFlow: [{ text: '.', copy: '.' }] },
+    interactiveButtons: { text: '.', interactiveButtons: [{ name: 'cta_copy', buttonParamsJson: '{}' }] }
 }
 let _api
 async function detectApi(bl) {
@@ -87,21 +206,23 @@ async function detectApi(bl) {
     return _api
 }
 
-// text message එකක් + "Copy" button එකක් යවනවා. බැරි වුනොත් සාමාන්‍ය text එක යවනවා.
-async function sendCopyButton({ conn, mek, from, text, copy, label, fallback }) {
+// text message එකක් + "Copy" button(s) යවනවා. බැරි වුනොත් සාමාන්‍ය text එක යවනවා.
+// buttons = [{ label, copy }, ...]
+async function sendCopyButton({ conn, mek, from, text, buttons, fallback }) {
+    if (!buttons.length) return fallback(text)
     try {
-        const button = {
+        const flow = buttons.map((b, i) => ({
             name: 'cta_copy',
-            buttonParamsJson: JSON.stringify({ display_text: label, id: 'copy_jid', copy_code: copy })
-        }
+            buttonParamsJson: JSON.stringify({ display_text: b.label, id: 'copy_' + i, copy_code: b.copy })
+        }))
         const bl = await getBaileys()
-        const api = BUTTON_MODE !== 'auto' ? BUTTON_MODE : (bl ? await detectApi(bl) : 'interactiveButtons')
+        const api = BUTTON_MODE !== 'auto' ? BUTTON_MODE : (bl ? await detectApi(bl) : 'nativeFlow')
 
-        // A) button support එක built-in තියෙන Baileys fork – සරලම විදිහ
-        if (api === 'interactiveButtons' || api === 'nativeFlow') {
+        // A) button support එක built-in තියෙන Baileys fork (dnuzi, itsliaaa, itsukichan ...) – සරලම විදිහ
+        if (api === 'nativeFlow' || api === 'interactiveButtons') {
             const content = api === 'nativeFlow'
-                ? { text, nativeFlow: [{ text: label, copy }] }
-                : { text, interactiveButtons: [button] }
+                ? { text, nativeFlow: buttons.map((b) => ({ text: b.label, copy: b.copy })) }
+                : { text, interactiveButtons: flow }
             if (FOOTER) content.footer = FOOTER
             return await conn.sendMessage(from, content, { quoted: mek })
         }
@@ -119,7 +240,7 @@ async function sendCopyButton({ conn, mek, from, text, copy, label, fallback }) 
                     interactiveMessage: IM.create({
                         body: IM.Body.create({ text }),
                         footer: IM.Footer.create({ text: FOOTER }),
-                        nativeFlowMessage: IM.NativeFlowMessage.create({ buttons: [button] })
+                        nativeFlowMessage: IM.NativeFlowMessage.create({ buttons: flow })
                     })
                 }
             }
@@ -145,20 +266,25 @@ async function sendCopyButton({ conn, mek, from, text, copy, label, fallback }) 
 
 cmd({
     pattern: 'jid',
-    desc: 'Get the JID of a user, group or channel',
+    desc: 'Get the JID / LID of a user, or the JID of a group or channel',
     category: 'main',
-    use: '/jid | /jid all | /jid 94711234567 | /jid <channel link> | reply + /jid',
+    use: `${PREFIX}jid | ${PREFIX}jid all | ${PREFIX}jid 94711234567 | ${PREFIX}jid <channel link> | reply + ${PREFIX}jid`,
     filename: __filename
 },
 async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
     try {
         const input = (q || '').trim()
 
-        // JID එක message එකක් විදිහට + "Copy" button එකත් එක්ක යවනවා
-        const send = (text, copy, label = '📋 Copy JID') =>
-            sendCopyButton({ conn, mek, from, text, copy, label, fallback: reply })
+        // message එකක් විදිහට + "Copy" button(s) එක්ක යවනවා
+        const send = (text, buttons) => sendCopyButton({ conn, mek, from, text, buttons, fallback: reply })
 
-        // 1) /jid all → every member's JID (groups only)
+        // group metadata (fail වුනොත් null – ඒත් LID mapping එකෙන් තවම හොයන්න පුළුවන්)
+        const getMeta = async () => {
+            if (!isGroup) return null
+            try { return await conn.groupMetadata(from) } catch (_) { return null }
+        }
+
+        // 1) .jid all → every member's JID (groups only)
         if (input.toLowerCase() === 'all') {
             if (!isGroup) return reply('❌ `all` can only be used inside a group.')
             if (ALL_ADMINS_ONLY && !isAdmins && !isOwner) return reply('❌ Only group admins can use this.')
@@ -166,13 +292,14 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             const meta = await conn.groupMetadata(from)
             const jids = meta.participants.map(memberJid)
             const list = jids.join('\n')
-            const text = `👥 *${meta.subject}*\nMembers: ${jids.length}\n\n` + mono(list)
+            const text = box('👥 *GROUP MEMBERS*', [`🏷️ *Group* : ${meta.subject}`, `👤 *Members* : ${jids.length}`])
+                + '\n\n' + mono(list)
 
             if (list.length > MAX_COPY_LENGTH) return reply(text) // ලොකු list එකකට button එක නෑ
-            return send(text, list, '📋 Copy All JIDs')
+            return send(text, [{ label: '📋 Copy All JIDs', copy: list }])
         }
 
-        // 2) /jid <channel link> → channel JID
+        // 2) .jid <channel link> → channel JID
         const channel = input.match(/whatsapp\.com\/channel\/([\w-]+)/i)
         if (channel) {
             if (typeof conn.newsletterMetadata !== 'function') {
@@ -181,46 +308,45 @@ async (conn, mek, m, { from, q, isGroup, isAdmins, isOwner, reply }) => {
             const meta = await conn.newsletterMetadata('invite', channel[1])
             if (!meta?.id) return reply('❌ Channel not found. Check the link and try again.')
             const name = meta.name || meta.thread_metadata?.name?.text
-            return send('📢 *Channel JID*' + (name ? ` (${name})` : '') + '\n\n' + mono(meta.id), meta.id)
+            return send(channelBox(name, meta.id), [{ label: '📋 Copy JID', copy: meta.id }])
         }
 
-        // 3) /jid 94711234567 → that number's JID
+        // 3) .jid 94711234567 → that number's JID + LID
         if (input) {
-            if (!/^[@+]?[\d\s()-]+$/.test(input)) {
-                return reply('❌ Invalid input.\n\n*Usage*\n/jid\n/jid all\n/jid 94711234567\n/jid <channel link>\nReply to a message + /jid')
-            }
+            if (!/^[@+]?[\d\s()-]+$/.test(input)) return reply('❌ *Invalid input*\n\n' + usageBox())
+
             let number = input.replace(/\D/g, '').replace(/^00/, '')
             if (number.startsWith('0')) number = '94' + number.slice(1) // 0711234567 → 94711234567
             if (number.length < 8 || number.length > 15) {
-                return reply('❌ Invalid number.\nExample: /jid 94711234567')
+                return reply('❌ *Invalid number*\nExample: ' + PREFIX + 'jid 94711234567')
             }
 
             let jid = number + '@s.whatsapp.net'
-            let note = ''
+            let lidHint = null
+            let missing = false
             try {
                 const [res] = (await conn.onWhatsApp(number)) || []
-                if (res?.exists) jid = res.jid
-                else note = '\n\n⚠️ This number does not seem to be on WhatsApp.'
+                if (res?.exists) { jid = res.jid; lidHint = res.lid } // සමහර Baileys වල lid එකත් එනවා
+                else missing = true
             } catch (_) { /* lookup failed – still return the JID */ }
 
-            return send('👤 *User JID*\n\n' + mono(jid) + note, jid)
+            const ids = missing ? { jid, lid: null } : await resolveIds(conn, jid, { alt: lidHint })
+            const extra = missing ? ['⚠️ _This number does not seem to be on WhatsApp_'] : []
+            return send(userBox(`📞 *Number* : +${number}`, ids, extra), userButtons(ids))
         }
 
-        // 4) reply + /jid → JID of the person you replied to
-        let quotedJid = m.quoted?.sender || mek.message?.extendedTextMessage?.contextInfo?.participant
-        if (quotedJid) {
-            if (isGroup && !isPN(quotedJid)) { // @lid → try to find the real number
-                const meta = await conn.groupMetadata(from)
-                const p = meta.participants.find(x => x.id === quotedJid || x.lid === quotedJid)
-                if (p) quotedJid = memberJid(p)
-            }
-            return send('👤 *Replied user JID*\n\n' + mono(quotedJid), quotedJid)
+        // 4) reply + .jid → JID + LID of the person you replied to
+        const quotedId = m.quoted?.sender || mek.message?.extendedTextMessage?.contextInfo?.participant
+        if (quotedId) {
+            const ids = await resolveIds(conn, quotedId, { meta: await getMeta() })
+            return send(userBox('👤 *Replied User*', ids), userButtons(ids))
         }
 
-        // 5) plain /jid → this chat's JID (inbox = that user, group = the group)
-        const alt = mek.key?.remoteJidAlt
-        const chatJid = (!isGroup && !isPN(from) && isPN(alt)) ? alt : from
-        return send((isGroup ? '👥 *Group JID*' : '👤 *User JID*') + '\n\n' + mono(chatJid), chatJid)
+        // 5) plain .jid → this chat's JID (inbox = that user's JID + LID, group = the group's JID)
+        if (isGroup) return send(groupBox(await getMeta(), from), [{ label: '📋 Copy JID', copy: from }])
+
+        const ids = await resolveIds(conn, from, { alt: mek.key?.remoteJidAlt })
+        return send(userBox('👤 *This Chat*', ids), userButtons(ids))
 
     } catch (e) {
         console.log(e)
