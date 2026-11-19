@@ -112,7 +112,7 @@ async function fetchAnimeInfo(id) {
 // ============================================================
 // Interactive list (button)
 // ============================================================
-async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, footerText, sections, imageUrl = null) {
+async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, footerText, sections, imageUrl = null, fallbackText = null) {
   try {
     let media = {};
     if (imageUrl) {
@@ -135,7 +135,7 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
   } catch (e) {
     // the numbered text is still readable and "reply with a number" still works
     console.error('[ANIINFO] Interactive list error:', e.message);
-    await conn.sendMessage(from, { text: bodyText + '\n\n' + footerText }, { quoted: mek });
+    await conn.sendMessage(from, { text: fallbackText || (bodyText + '\n\n' + footerText) }, { quoted: mek });
     return false;
   }
 }
@@ -145,31 +145,40 @@ async function sendInteractiveList(conn, from, mek, headerTitle, bodyText, foote
 // ============================================================
 
 // ---------- search results ----------
-// How much of each result goes into the menu text: the first level that fits WhatsApp's body limit is used.
-// (The list rows always carry type | score | aired | status, so nothing is lost either way.)
-const BODY_LEVELS = [
-  (r) => [r.type, r.score ? `⭐ ${r.score}` : null, r.aired || r.year, r.status],
-  (r) => [r.type, r.score ? `⭐ ${r.score}` : null, r.year],
-  () => []
-];
+// What goes under each title. The menu always uses the compact line (it keeps every result on 2 clean lines);
+// the list rows carry the rest (type | score | aired | status), and the plain-text fallback uses the full line.
+const yearOf = (r) => r.year || (String(r.aired || '').match(/\d{4}/) || [])[0];
+const META_COMPACT = (r) => [r.type && `📺 ${r.type}`, r.score && `⭐ ${r.score}`, yearOf(r) && `📅 ${yearOf(r)}`];
+const META_FULL = (r) => [r.type && `📺 ${r.type}`, r.score && `⭐ ${r.score}`, (r.aired || r.year) && `📅 ${r.aired || r.year}`, r.status && `📡 ${r.status}`];
+const META_NONE = () => [];
 
 // pageResults = the results of ONE list, startIndex = how many results came before it (numbering is global)
-function buildResultsBody(query, pageResults, startIndex, total) {
+//
+//   🔍 *Results for "naruto"*
+//   ━━━━━━━━━━━━━━━━━━━━
+//
+//   *1* | Naruto
+//   📺 TV • ⭐ 8.03 • 📅 2002
+//
+//   *2* | Naruto: Shippuuden
+//   📺 TV • ⭐ 8.29 • 📅 2007
+function buildResultsBody(query, pageResults, startIndex, total, full = false) {
   const range = total > pageResults.length
     ? ` (${startIndex + 1}–${startIndex + pageResults.length} of ${total})` : '';
-  const head = `🔍 *Results for "${truncate(query, 60)}"*${range}\n\n`;
+  const head = `🔍 *Results for "${truncate(query, 60)}"*${range}\n${SEP}\n\n`;
 
-  const build = (level, maxTitle) => head + pageResults.map((r, i) => {
+  const build = (meta, maxTitle) => head + pageResults.map((r, i) => {
     const title = truncate(String(r.title || 'Unknown'), maxTitle);
-    const meta = level(r).filter(Boolean).join(' • ');
-    return `${startIndex + i + 1} | ${title}${meta ? ` — ${meta}` : ''}`;
-  }).join('\n');
+    const line = meta(r).filter(Boolean).join(' • ');
+    return `*${startIndex + i + 1}* | ${title}${line ? `\n${line}` : ''}`;
+  }).join('\n\n');
 
-  for (const level of BODY_LEVELS) {
-    const body = build(level, 200);
+  if (full) return build(META_FULL, 200);                 // plain text has no length limit
+  for (const meta of [META_COMPACT, META_NONE]) {
+    const body = build(meta, 200);
     if (body.length <= MAX_BODY_LEN) return body;
   }
-  return build(() => [], 60);   // absurdly long titles: shorten them as a last resort
+  return build(META_NONE, 60);                            // absurdly long titles: shorten them as a last resort
 }
 
 function buildResultRows(pageResults, startIndex) {
@@ -197,7 +206,9 @@ async function sendResultLists(conn, from, mek, session) {
       buildResultsBody(query, page, start, results.length),
       'Tap the button or reply with a number (0 = close)',
       [{ title: multi ? `Results ${start + 1}-${start + page.length}` : 'MAL Results', rows: buildResultRows(page, start) }],
-      page[0].image || null
+      page[0].image || null,
+      // if the list cannot be sent: plain text (no length limit, so the richest layout) + "reply with a number"
+      buildResultsBody(query, page, start, results.length, true) + '\n\n↩️ Reply with a number to select (0 = close)'
     );
 
     if (start + ROWS_PER_LIST < results.length) await sleep(700);
