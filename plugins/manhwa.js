@@ -21,7 +21,13 @@
  *    PDF_ONLY (CONFIG, default true): only the renamed PDFs are sent – no caption, no quote,
  *    no "Sending…"/summary messages. A message still appears if something fails or is stopped.
  *
- *  Install    npm i axios pdf-lib        (optional: sharp → for .webp pages)
+ *    GROUP_THUMBNAIL (default true): the PDF's preview picture is the destination group's profile photo.
+ *      It is stored inside the WhatsApp message itself (jpegThumbnail), so forwarding keeps it.
+ *    GROUP_NAME_PAGE (default true): every PDF gets a last page with the destination group's name.
+ *      Latin names work out of the box (emoji / unsupported letters are skipped). For Sinhala etc. set FONT_PATH
+ *      to a .ttf that contains those letters and run:  npm i @pdf-lib/fontkit regenerator-runtime
+ *
+ *  Install    npm i axios pdf-lib        (optional: sharp → .webp pages + sharper group-photo thumbnail)
  *  Location   <your-bot>/plugins/manhwa.js
  * ─────────────────────────────────────────────────────────────────
  */
@@ -29,11 +35,18 @@
 const axios = require('axios');
 // [gf-integration] pdf-lib is not installed yet in every project: load it softly so the bot still starts (run:  npm install)
 let PDFDocument = null;
-try { ({ PDFDocument } = require('pdf-lib')); } catch (_) { /* reported when the command is used */ }
+let StandardFonts = null;
+let rgb = null;
+try { ({ PDFDocument, StandardFonts, rgb } = require('pdf-lib')); } catch (_) { /* reported when the command is used */ }
 const { cmd } = require('../command'); // ← if your bot exports `cmd` from somewhere else, change this line
+const fs = require('fs');
+const path = require('path');
 
 let sharp = null;
 try { sharp = require('sharp'); } catch (_) { /* optional */ }
+let fontkit = null; // optional – only needed for FONT_PATH (npm i @pdf-lib/fontkit regenerator-runtime)
+try { if (typeof regeneratorRuntime === 'undefined') global.regeneratorRuntime = require('regenerator-runtime'); } catch (_) { /* fontkit needs it */ }
+try { fontkit = require('@pdf-lib/fontkit'); } catch (_) { /* optional */ }
 
 /* ───────────────────────── CONFIG ───────────────────────── */
 const CONFIG = {
@@ -49,6 +62,9 @@ const CONFIG = {
   ONLY_REQUESTER: false,   // true = only the person who ran .manhwa can reply to the lists
   TARGET_OWNER_ONLY: true, // true = sending to ANOTHER group needs isOwner (if your bot provides it)
   PDF_ONLY: true,          // true = send ONLY the renamed PDFs (no caption / quote / status chatter); false = SS-style captions
+  GROUP_THUMBNAIL: true,   // PDF preview picture = the destination group's profile photo (kept when the message is forwarded)
+  GROUP_NAME_PAGE: true,   // add a last page with the destination group's name to every PDF
+  FONT_PATH: '',           // optional .ttf/.otf for group names in Sinhala/other scripts (abs path, or relative to this file) – also needs: npm i @pdf-lib/fontkit regenerator-runtime
 };
 const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36';
 
@@ -226,7 +242,186 @@ async function embedImage(pdf, buf) {
   return pdf.embedJpg(jpg);
 }
 
-async function buildPdf(urls) {
+/* ───────────────────────── GROUP BRANDING ───────────────────────── */
+// 1) The destination group's profile photo becomes the PDF's preview picture. It is sent as the message's own
+//    jpegThumbnail, so it lives inside the message – forwarding the PDF keeps the very same picture.
+// 2) A last page carrying the destination group's name is added to the PDF.
+const isGroup = (jid) => String(jid || '').endsWith('@g.us');
+const THUMB_PX = 256;
+const THUMB_MAX = 30 * 1024;
+
+async function groupThumb(conn, jid) {
+  try {
+    // with sharp we resize the full photo ourselves; without it we take WhatsApp's own small preview JPEG
+    const url = await Promise.race([conn.profilePictureUrl(jid, sharp ? 'image' : 'preview'), sleep(15000).then(() => null)]);
+    if (!url) return null;
+    const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 20000 });
+    const src = Buffer.from(res.data);
+    if (!sharp) return src[0] === 0xff && src[1] === 0xd8 && src.length <= 60 * 1024 ? src : null;
+    let out = null;
+    for (const px of [THUMB_PX, 160]) { // keep the preview small: lower quality first, then fewer pixels
+      for (const q of [72, 55, 40]) {
+        out = await sharp(src).resize(px, px, { fit: 'cover' }).jpeg({ quality: q }).toBuffer();
+        if (out.length <= THUMB_MAX) return out;
+      }
+    }
+    return out;
+  } catch (_) {
+    return null; // no photo / hidden by privacy / network problem → just send without a thumbnail
+  }
+}
+
+// small-caps letters (ᴍᴀɴʜᴡᴀ) are very common in group names but have no NFKC mapping
+const SMALL_CAPS = {
+  'ᴀ': 'A', 'ʙ': 'B', 'ᴄ': 'C', 'ᴅ': 'D', 'ᴇ': 'E', 'ꜰ': 'F', 'ɢ': 'G', 'ʜ': 'H', 'ɪ': 'I', 'ᴊ': 'J', 'ᴋ': 'K', 'ʟ': 'L', 'ᴍ': 'M',
+  'ɴ': 'N', 'ᴏ': 'O', 'ᴘ': 'P', 'ǫ': 'Q', 'ʀ': 'R', 'ꜱ': 'S', 'ᴛ': 'T', 'ᴜ': 'U', 'ᴠ': 'V', 'ᴡ': 'W', 'ʏ': 'Y', 'ᴢ': 'Z',
+};
+const SMALL_CAPS_RE = new RegExp(`[${Object.keys(SMALL_CAPS).join('')}]`, 'g');
+
+// fancy → plain letters (𝐒𝐋𝐏𝐋, ＳＬＰＬ, Ⓢ, ᴍᴀɴʜᴡᴀ …), then drop what no available font can draw (emoji etc.)
+function cleanName(name, canDraw) {
+  const norm = Array.from(String(name || '').normalize('NFKC').replace(SMALL_CAPS_RE, (c) => SMALL_CAPS[c]).replace(/\s+/g, ' '));
+  const kept = norm.filter((ch) => canDraw(ch.codePointAt(0)));
+  return { text: kept.join('').replace(/\s+/g, ' ').trim().slice(0, 100), dropped: norm.length - kept.length };
+}
+
+// fonts usable for the name page: Helvetica-Bold, plus your own .ttf (FONT_PATH) for other scripts
+let customFont; // undefined = not tried yet, null = unusable
+function loadCustomFont() {
+  if (customFont !== undefined) return customFont;
+  customFont = null;
+  if (!CONFIG.FONT_PATH) return null;
+  if (!fontkit) {
+    console.error('[manhwa] FONT_PATH is set but @pdf-lib/fontkit is missing → run: npm i @pdf-lib/fontkit regenerator-runtime');
+    return null;
+  }
+  try {
+    const file = path.isAbsolute(CONFIG.FONT_PATH) ? CONFIG.FONT_PATH : path.join(__dirname, CONFIG.FONT_PATH);
+    const fk = fontkit.create(fs.readFileSync(file));
+    fk.layout('a'); // fails right here (with a clear hint) if fontkit can't run on this machine
+    customFont = { fk, has: new Set(fk.characterSet) };
+  } catch (e) {
+    console.error('[manhwa] FONT_PATH not usable:', e.message, /regenerator/.test(e.message) ? '→ run: npm i regenerator-runtime' : '');
+  }
+  return customFont;
+}
+
+async function nameFonts(pdf) {
+  const latin = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const fonts = [{ std: latin, has: new Set(latin.getCharacterSet()) }];
+  const custom = loadCustomFont();
+  if (custom) fonts.push(custom);
+  return fonts;
+}
+
+// split a line into runs, each drawn with the first font that has the character (Latin → Helvetica, rest → your font)
+function runsOf(text, fonts) {
+  const runs = [];
+  for (const ch of text) {
+    const f = fonts.find((x) => x.has.has(ch.codePointAt(0)));
+    if (!f) continue;
+    const last = runs[runs.length - 1];
+    if (last && last.f === f) last.text += ch; else runs.push({ f, text: ch });
+  }
+  return runs;
+}
+const runWidth = (r, size) => (r.f.std
+  ? r.f.std.widthOfTextAtSize(r.text, size)
+  : (r.f.fk.layout(r.text).positions.reduce((w, p) => w + p.xAdvance, 0) * size) / r.f.fk.unitsPerEm);
+const runsWidth = (runs, size) => runs.reduce((w, r) => w + runWidth(r, size), 0);
+
+// Helvetica runs are normal PDF text. Runs in your own font are drawn glyph by glyph as outlines, using the shaper's
+// positions – that keeps Sinhala vowel signs & conjuncts exactly where they belong (pdf-lib's drawText ignores those).
+function drawRun(page, r, x, y, size, color) {
+  if (r.f.std) { page.drawText(r.text, { x, y, size, font: r.f.std, color }); return; }
+  const { fk } = r.f;
+  const scale = size / fk.unitsPerEm;
+  const run = fk.layout(r.text);
+  let pen = 0;
+  run.glyphs.forEach((g, i) => {
+    const pos = run.positions[i];
+    const d = g.path.transform(1, 0, 0, -1, 0, 0).toSVG(); // font outlines are y-up, drawSvgPath is y-down
+    if (d) page.drawSvgPath(d, { x: x + (pen + pos.xOffset) * scale, y: y + pos.yOffset * scale, scale, color });
+    pen += pos.xAdvance;
+  });
+}
+
+// biggest font size at which the name fits in ≤ 3 lines
+function fitText(text, fonts, maxW) {
+  const widthOf = (s, size) => runsWidth(runsOf(s, fonts), size);
+  for (const size of [60, 52, 44, 38, 32, 28, 24, 20]) {
+    const lines = [];
+    let cur = '';
+    let fits = true;
+    for (const word of text.split(' ')) {
+      const next = cur ? `${cur} ${word}` : word;
+      if (widthOf(next, size) <= maxW) { cur = next; continue; }
+      if (cur) lines.push(cur);
+      cur = word;
+      if (widthOf(cur, size) > maxW) { fits = false; break; }
+    }
+    if (fits) {
+      if (cur) lines.push(cur);
+      if (lines.length <= 3) return { size, lines };
+    }
+  }
+  const chars = Array.from(text); // last resort: one small line with an ellipsis
+  while (chars.length > 1 && widthOf(`${chars.join('')}…`, 20) > maxW) chars.pop();
+  return { size: 20, lines: [`${chars.join('')}…`] };
+}
+
+async function addNamePage(pdf, text) {
+  const fonts = await nameFonts(pdf);
+  const w = Math.max(360, Math.round(pdf.getPage(0).getWidth())); // same width as the manhwa pages
+  const h = Math.round(w * 0.62);
+  const { size, lines } = fitText(text, fonts, w * 0.82); // lay the text out first – nothing is added if this fails
+  const page = pdf.addPage([w, h]);
+  page.drawRectangle({ x: 0, y: 0, width: w, height: h, color: rgb(0.06, 0.06, 0.09) });
+  const lineH = size * 1.25;
+  const top = h / 2 + (lineH * lines.length) / 2;
+  page.drawRectangle({ x: w / 2 - 36, y: top + 18, width: 72, height: 4, color: rgb(0.55, 0.36, 0.96) });
+  lines.forEach((line, i) => {
+    const runs = runsOf(line, fonts);
+    let x = (w - runsWidth(runs, size)) / 2;
+    const y = top - size - i * lineH;
+    for (const r of runs) {
+      drawRun(page, r, x, y, size, rgb(1, 1, 1));
+      x += runWidth(r, size);
+    }
+  });
+}
+
+// everything the destination group adds to a job: preview picture, name-page text, and notes about what was skipped
+async function prepareBranding(conn, dest, meta) {
+  const brand = { thumb: null, endText: '', notes: [] };
+  if (!isGroup(dest)) return brand;
+  try {
+    if (CONFIG.GROUP_THUMBNAIL) {
+      brand.thumb = await groupThumb(conn, dest);
+      if (!brand.thumb) brand.notes.push('🖼️ No group photo found — sending without a thumbnail.');
+    }
+    if (CONFIG.GROUP_NAME_PAGE && meta && meta.subject) {
+      try {
+        const tmp = await PDFDocument.create();
+        const fonts = await nameFonts(tmp);
+        const { text, dropped } = cleanName(meta.subject, (cp) => fonts.some((f) => f.has.has(cp)));
+        if (text) fitText(text, fonts, 600); // dry run: a font / shaping problem shows up here, once – not in every chapter
+        brand.endText = text;
+        if (!text) brand.notes.push('📄 The group name has no letters the PDF font can draw — name page skipped (see FONT_PATH).');
+        else if (dropped) brand.notes.push(`📄 Name page prints *${text}* (emoji / unsupported letters skipped).`);
+      } catch (e) {
+        brand.endText = '';
+        brand.notes.push('📄 Name page skipped — the PDF font could not draw the group name (see the bot console).');
+        console.error('[manhwa] name page skipped:', e.message, /regenerator/.test(e.message) ? '→ run: npm i regenerator-runtime' : '');
+      }
+    }
+  } catch (e) {
+    console.error('[manhwa] group branding skipped:', e.message);
+  }
+  return brand;
+}
+
+async function buildPdf(urls, endText) {
   const pages = await mapLimit(urls, CONFIG.IMG_CONCURRENCY, (url, i) =>
     retry(async () => {
       const res = await axios.get(url, {
@@ -245,11 +440,20 @@ async function buildPdf(urls) {
     pdf.addPage([img.width, img.height]).drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
     pages[i] = null; // free memory as we go
   }
+  if (endText) {
+    const n = pdf.getPageCount();
+    try {
+      await addNamePage(pdf, endText);
+    } catch (e) {
+      while (pdf.getPageCount() > n) pdf.removePage(pdf.getPageCount() - 1); // never leave a half-drawn page behind
+      console.error('[manhwa] name page skipped:', e.message, /regenerator/.test(e.message) ? '→ run: npm i regenerator-runtime' : '');
+    }
+  }
   return Buffer.from(await pdf.save());
 }
 
 /* ───────────────────────── SENDING CHAPTERS ───────────────────────── */
-// job = { dest, other, destName, tag, warn }   dest = where the PDFs go, other = dest is not this chat
+// job = { dest, other, destName, tag, warn, thumb, endText, notes }   dest = where the PDFs go, other = dest is not this chat
 async function sendOne(conn, session, idx, job, quoted) {
   const ch = session.chapters[idx - 1];
   const { data } = await retry(
@@ -258,9 +462,10 @@ async function sendOne(conn, session, idx, job, quoted) {
   const pages = data && data.DownloadUrl;
   if (!data || !data.status || !Array.isArray(pages) || !pages.length) throw new Error('API returned no pages');
 
-  const pdf = await buildPdf(pages);
+  const pdf = await buildPdf(pages, job.endText);
   const fileName = `${job.tag ? `(${job.tag})` : ''}${safeName(`${session.title} - ${ch.title}`)}.pdf`;
   const content = { document: pdf, mimetype: 'application/pdf', fileName };
+  if (job.thumb) content.jpegThumbnail = job.thumb; // group photo – part of the message itself, so forwards keep it
   if (!CONFIG.PDF_ONLY) {
     content.caption = [
       `🔞 *${session.title}*`,
@@ -290,18 +495,21 @@ async function sendChapters(conn, session, picks, replyMsg, job) {
   let aborted = '';
 
   const quiet = CONFIG.PDF_ONLY;
+  for (const n of job.notes || []) console.log('[manhwa]', n.replace(/\*/g, ''));
   await react(conn, replyMsg, '⏳');
   if (!quiet && (batch || other)) {
     const info = [`📥 Sending *${picks.length}* chapter${batch ? 's' : ''} of *${title}*`];
     if (other) info.push(`📤 To: *${destName}*`);
     if (tag) info.push(`🏷️ File name prefix: (${tag})`);
     if (job.warn) info.push(job.warn);
+    info.push(...(job.notes || []));
     if (batch) info.push('↩️ Reply *stop* to the chapter list to cancel.');
     await say(conn, from, info.join('\n'), replyMsg);
   } else if (quiet && other) {
     // PDF_ONLY: one short line in THIS chat (not in the target group) so you can see where the files go
     const info = [`📤 ${picks.length} chapter${batch ? 's' : ''} → *${destName}*`];
     if (job.warn) info.push(job.warn);
+    info.push(...(job.notes || []));
     await say(conn, from, info.join('\n'), replyMsg);
   }
 
@@ -413,17 +621,21 @@ async function onReply(conn, msg) {
   try {
     let destName = '';
     let warn = '';
-    if (other) {
-      let meta;
+    let meta = null;
+    if (other || (isGroup(dest) && (CONFIG.GROUP_THUMBNAIL || CONFIG.GROUP_NAME_PAGE))) {
       try {
         meta = await conn.groupMetadata(dest);
       } catch (e) {
-        return await say(conn, from, `❌ Can't reach that group — wrong JID, or the bot is not a member.\n(${e.message})`, msg);
+        // another group we can't reach → stop here; this chat → just go on without the group name
+        if (other) return await say(conn, from, `❌ Can't reach that group — wrong JID, or the bot is not a member.\n(${e.message})`, msg);
       }
+    }
+    if (other) {
       destName = (meta && meta.subject) || dest;
       warn = adminWarning(conn, meta);
     }
-    await sendChapters(conn, session, picks, msg, { dest, other, destName, tag, warn });
+    const brand = await prepareBranding(conn, dest, meta);
+    await sendChapters(conn, session, picks, msg, { dest, other, destName, tag, warn, ...brand });
   } finally {
     session.busy = false;
   }
