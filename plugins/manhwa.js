@@ -23,7 +23,8 @@
  *
  *    GROUP_THUMBNAIL (default true): the PDF's preview picture is the destination group's profile photo.
  *      It is stored inside the WhatsApp message itself (jpegThumbnail), so forwarding keeps it.
- *    GROUP_NAME_PAGE (default true): every PDF gets a last page with the destination group's name.
+ *    GROUP_NAME_PAGE (default true): every PDF gets a small last page – "Powered by" + the destination group's name –
+ *      as wide as the manhwa pages. Wording = NAME_PAGE_LABEL, size = NAME_PAGE_SCALE.
  *      Latin names work out of the box (emoji / unsupported letters are skipped). For Sinhala etc. set FONT_PATH
  *      to a .ttf that contains those letters and run:  npm i @pdf-lib/fontkit regenerator-runtime
  *
@@ -54,7 +55,7 @@ const CONFIG = {
   API_DL: 'https://poddax-api.dev/manhwa-dl',
   REFERER: 'https://manga18fx.com/',
   BANNER: '',              // image URL / local path for the list cards ('' = text only)
-  FOOTER: 'shiro-MD',
+  FOOTER: 'SHIRO-MD',
   MAX_RESULTS: 10,         // how many search results to list
   SESSION_MIN: 30,         // minutes a list stays "replyable"
   DELAY_MS: 4000,          // pause between chapters in batch mode (helps avoid WhatsApp spam limits)
@@ -63,7 +64,9 @@ const CONFIG = {
   TARGET_OWNER_ONLY: true, // true = sending to ANOTHER group needs isOwner (if your bot provides it)
   PDF_ONLY: true,          // true = send ONLY the renamed PDFs (no caption / quote / status chatter); false = SS-style captions
   GROUP_THUMBNAIL: true,   // PDF preview picture = the destination group's profile photo (kept when the message is forwarded)
-  GROUP_NAME_PAGE: true,   // add a last page with the destination group's name to every PDF
+  GROUP_NAME_PAGE: true,   // add a small last page ("Powered by" + the destination group's name) to every PDF
+  NAME_PAGE_LABEL: 'Powered by', // the small text above the group name on that page ('' = no label)
+  NAME_PAGE_SCALE: 1,      // size of that page and its text: 0.7 = even smaller, 1.3 = bigger
   FONT_PATH: '',           // optional .ttf/.otf for group names in Sinhala/other scripts (abs path, or relative to this file) – also needs: npm i @pdf-lib/fontkit regenerator-runtime
 };
 const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36';
@@ -346,49 +349,81 @@ function drawRun(page, r, x, y, size, color) {
   });
 }
 
-// biggest font size at which the name fits in ≤ 3 lines
-function fitText(text, fonts, maxW) {
+// the name is drawn as large as fits: ≤ 2 lines at 40…22 pt, else ≤ 3 lines at 20…18 pt, else one shrunk line with "…"
+const NAME_TIERS = [{ sizes: [40, 34, 30, 26, 22], lines: 2 }, { sizes: [20, 18], lines: 3 }];
+function fitText(text, fonts, maxW, unit = 1) {
   const widthOf = (s, size) => runsWidth(runsOf(s, fonts), size);
-  for (const size of [60, 52, 44, 38, 32, 28, 24, 20]) {
-    const lines = [];
-    let cur = '';
-    let fits = true;
-    for (const word of text.split(' ')) {
-      const next = cur ? `${cur} ${word}` : word;
-      if (widthOf(next, size) <= maxW) { cur = next; continue; }
-      if (cur) lines.push(cur);
-      cur = word;
-      if (widthOf(cur, size) > maxW) { fits = false; break; }
-    }
-    if (fits) {
-      if (cur) lines.push(cur);
-      if (lines.length <= 3) return { size, lines };
+  for (const { sizes, lines: maxLines } of NAME_TIERS) {
+    for (const base of sizes) {
+      const size = base * unit;
+      const lines = [];
+      let cur = '';
+      let fits = true;
+      for (const word of text.split(' ')) {
+        const next = cur ? `${cur} ${word}` : word;
+        if (widthOf(next, size) <= maxW) { cur = next; continue; }
+        if (cur) lines.push(cur);
+        cur = word;
+        if (widthOf(cur, size) > maxW) { fits = false; break; }
+      }
+      if (fits) {
+        if (cur) lines.push(cur);
+        if (lines.length <= maxLines) return { size, lines };
+      }
     }
   }
-  const chars = Array.from(text); // last resort: one small line with an ellipsis
-  while (chars.length > 1 && widthOf(`${chars.join('')}…`, 20) > maxW) chars.pop();
-  return { size: 20, lines: [`${chars.join('')}…`] };
+  const size = 18 * unit;
+  const chars = Array.from(text);
+  while (chars.length > 1 && widthOf(`${chars.join('')}…`, size) > maxW) chars.pop();
+  return { size, lines: [`${chars.join('')}…`] };
 }
 
+// the width most manhwa pages have – the name page copies it, so it lines up in any PDF viewer
+function commonWidth(pdf) {
+  const count = new Map();
+  for (const pg of pdf.getPages()) {
+    const w = Math.round(pg.getWidth());
+    count.set(w, (count.get(w) || 0) + 1);
+  }
+  return [...count.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+}
+
+// a small "credits strip" as the last page:   ▔▔▔▔▔  Powered by  /  Group Name
 async function addNamePage(pdf, text) {
   const fonts = await nameFonts(pdf);
-  const w = Math.max(360, Math.round(pdf.getPage(0).getWidth())); // same width as the manhwa pages
-  const h = Math.round(w * 0.62);
-  const { size, lines } = fitText(text, fonts, w * 0.82); // lay the text out first – nothing is added if this fails
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const labelFonts = [{ std: regular, has: fonts[0].has }, ...fonts.slice(1)];
+  const label = CONFIG.NAME_PAGE_LABEL
+    ? cleanName(CONFIG.NAME_PAGE_LABEL, (cp) => labelFonts.some((f) => f.has.has(cp))).text
+    : '';
+
+  const w = Math.max(360, commonWidth(pdf)); // same width as the manhwa pages
+  const u = (w / 760) * Math.min(2, Math.max(0.4, Number(CONFIG.NAME_PAGE_SCALE) || 1)); // sizes below are for a 760-wide page
+  const { size, lines } = fitText(text, fonts, w * 0.82, u); // lay the text out first – nothing is added if this fails
+  const strip = 5 * u;
+  const pad = 24 * u;
+  const labelSize = 19 * u;
+  const labelH = label ? labelSize * 1.2 + 6 * u : 0;
+  const lineH = size * 1.2;
+  const h = Math.round(strip + pad + labelH + lineH * lines.length + pad);
+
   const page = pdf.addPage([w, h]);
   page.drawRectangle({ x: 0, y: 0, width: w, height: h, color: rgb(0.06, 0.06, 0.09) });
-  const lineH = size * 1.25;
-  const top = h / 2 + (lineH * lines.length) / 2;
-  page.drawRectangle({ x: w / 2 - 36, y: top + 18, width: 72, height: 4, color: rgb(0.55, 0.36, 0.96) });
-  lines.forEach((line, i) => {
-    const runs = runsOf(line, fonts);
-    let x = (w - runsWidth(runs, size)) / 2;
-    const y = top - size - i * lineH;
+  page.drawRectangle({ x: 0, y: h - strip, width: w, height: strip, color: rgb(0.55, 0.36, 0.96) });
+  const centered = (line, fontList, sz, baseline, color) => {
+    const runs = runsOf(line, fontList);
+    let x = (w - runsWidth(runs, sz)) / 2;
     for (const r of runs) {
-      drawRun(page, r, x, y, size, rgb(1, 1, 1));
-      x += runWidth(r, size);
+      drawRun(page, r, x, baseline, sz, color);
+      x += runWidth(r, sz);
     }
-  });
+  };
+  let top = h - strip - pad;
+  if (label) {
+    centered(label, labelFonts, labelSize, top - labelSize, rgb(0.62, 0.65, 0.72));
+    top -= labelH;
+  }
+  lines.forEach((line, i) => centered(line, fonts, size, top - size - i * lineH, rgb(1, 1, 1)));
 }
 
 // everything the destination group adds to a job: preview picture, name-page text, and notes about what was skipped
