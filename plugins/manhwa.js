@@ -54,7 +54,7 @@ const CONFIG = {
   API_DL: 'https://poddax-api.dev/manhwa-dl',
   REFERER: 'https://manga18fx.com/',
   BANNER: '',              // image URL / local path for the list cards ('' = text only)
-  FOOTER: 'Hexora mini 🌺👾',
+  FOOTER: 'shiro-MD',
   MAX_RESULTS: 10,         // how many search results to list
   SESSION_MIN: 30,         // minutes a list stays "replyable"
   DELAY_MS: 4000,          // pause between chapters in batch mode (helps avoid WhatsApp spam limits)
