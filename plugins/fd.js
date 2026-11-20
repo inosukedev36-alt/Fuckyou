@@ -21,7 +21,7 @@ const { pipeline } = require('stream/promises');
 const { cmd } = require('../command');
 const { downloadContentFromMessage } = require('@dnuzi/baileys');
 
-const OWNER_ONLY = true;         // false = anyone can use .fd
+const OWNER_ONLY = false;         // false = anyone can use .fd
 const SHOW_FORWARD_TAG = false;  // true = sent messages carry WhatsApp's "Forwarded" label
 const DELAY_MS = 1500;           // pause between jids (anti-spam)
 const MAX_TRIES = 3;             // timer jobs: tries per jid (covers the bot reconnecting)
