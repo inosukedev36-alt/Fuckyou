@@ -12,7 +12,7 @@ global._hanimeSessions = sessions;
 const SEARCH_API = 'https://poddax-api.dev/hanime/search?text=';
 const DOWNLOAD_API = 'https://poddax-api.dev/hanime/download?url=';
 
-const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 5 * 60 * 60 * 1000;
 
 // ============================================================
 // Antiban Helper Functions (Delay & Typing Presence)
