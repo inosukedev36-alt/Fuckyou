@@ -473,7 +473,7 @@ async (conn, mek, m, ctx) => {
     if (!arg || sub === 'help') {
         if (!boy) return reply(`💬 ${p}gf me — what I remember about you\n${p}gf forget — delete all of it`);
         return reply(`💕 *${g.name}* ${g.react}  ← your girlfriend now\n\n` +
-            `${p}gf list — see all 13\n${p}gf <name> — switch (e.g. ${p}gf ${Object.keys(GIRLS)[0]})\n` +
+            `${p}gf list — see all ${Object.keys(GIRLS).length}\n${p}gf <name> — switch (e.g. ${p}gf ${Object.keys(GIRLS)[0]})\n` +
             `${p}gf me — what she remembers about you\n${p}gf forget — delete what she remembers\n` +
             `${p}gf people — the people you introduced to her\n${p}gf tools — everything she can do\n\n` +
             `…or just talk to her. Ask her for things (playlist links, stickers, group stuff) in your own words 💬`);
@@ -492,7 +492,7 @@ async (conn, mek, m, ctx) => {
     // everything below changes WHO she is → only her boyfriend
     if (!boy) return reply(line('blocked', casualOf(g), user, 'en'));
     if (sub === 'list') {
-        return reply('💕 *Choose your girlfriend*\n\n' +
+        return reply(`💕 *Choose your girlfriend* (${Object.keys(GIRLS).length})\n\n` +
             Object.values(GIRLS).map(x => `${x.react} *${x.key}* — ${x.desc || x.name}${x.key === g.key ? '  ✅' : ''}`).join('\n') +
             `\n\nExample: ${p}gf ${Object.keys(GIRLS)[1]}`);
     }
@@ -524,7 +524,7 @@ async (conn, mek, m, ctx) => {
     return switchTo(conn, mek, m, ctx, target, arg.split(/\s+/).slice(1).join(' '));
 });
 
-// the 13 old commands still work as shortcuts (hidden from the menu): /taiga, /kurumi hi …
+// the old per-girl commands still work as shortcuts (hidden from the menu): /taiga, /kurumi hi …
 for (const g of Object.values(GIRLS)) {
     cmd({ pattern: g.key, alias: g.alias, desc: g.desc, category: 'ai', react: g.react, dontAddCommandList: true, gfDirect: true, filename: __filename },
         async (conn, mek, m, ctx) => (isBoyfriend(ctx)
