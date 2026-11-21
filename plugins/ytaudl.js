@@ -4,7 +4,12 @@
  * ───────────────────────────────────────────────────────────────
  *  Commands:
  *    .ytdl <words | link> [jid/lid]  → search YouTube, pick a result with buttons, then choose
- *                                      Audio / Voice note / Video  (video: quality + Document / Video)
+ *                                      Audio / Voice note / Video  (video: quality + Document / Video),
+ *                                      or the audio as a Document
+ *    .ytfd <words | link> [jid/lid]  → same menus, but the result is a channel-style post: a card (picture, title,
+ *                                      views, duration, date, text play bar, react line, channel name) followed by the
+ *                                      audio / voice note / document — for a video the card text is its caption.
+ *                                      Sent to the jid / lid you give (user, group, lid, channel) or to this chat.
  *    .ytaudl <link> [jid/lid]        → downloads as audio file
  *    .ytvcdl <link> [jid/lid]        → downloads as voice note (ptt)
  *    .ytvdl <link> [jid/lid]         → downloads as video (buttons: quality, then Document / Video)
@@ -55,7 +60,6 @@ const PROGRESS_STEP       = 20;
 // ─────────────── video / search / button settings ───────────────
 const PODDAX_BASE          = process.env.PODDAX_API_BASE || 'https://poddax-api.dev';
 const PODDAX_NAME          = 'Poddax API';
-const MAX_VIDEO_MB         = 100;  // biggest video the bot will download and send (qualities above it are not offered)
 const MAX_VIDEO_PLAYLIST   = 20;   // .ytvdl with a playlist link: how many videos at most
 const MAX_SEARCH_RESULTS   = 10;   // .ytdl: results shown (WhatsApp lists hold 10 rows at most)
 const VIDEO_DL_RETRIES     = 3;    // a broken video download is resumed this many times
@@ -75,6 +79,12 @@ const SESSION_TTL_MS       = 10 * 60 * 1000; // how long the buttons of a menu s
 //   'text'        → no buttons at all, numbered text menus only
 const BUTTON_STYLE = 'auto';
 const MENU_FOOTER  = 'YouTube Downloader';
+
+// ─────────────── .ytfd card (the post style of your channel) ───────────────
+// picture + title / views / duration / release date + a text music-player bar + react line + channel name
+const CARD_CHANNEL_NAME = 'සින්දු පන්තිය || 🎧🇱🇰';       // the last line of the card — write your own channel name ('' = no line)
+const CARD_REACT_LINE   = '• ලස්සන රියැක්ට් ඔනී ...💗😽🍃'; // the "react please" line ('' = no line)
+const THUMB_BASE        = 'https://i.ytimg.com';             // where the card picture (the video thumbnail) comes from
 
 // ─────────────── anti-ban timings ───────────────
 const TRACK_DELAY_MIN_MS   = 8000;
@@ -176,13 +186,20 @@ const MSG = {
         `${PREFIX_HINT}ytdl https://youtu.be/xxxxxxxxxxx\n` +
         `${PREFIX_HINT}ytdl <words> 12345@g.us  (send to another chat)\n\n` +
         'ℹ️ You will get buttons to pick the video and to choose *Audio / Voice note / Video*.',
-    searchPlaylistLink: `ℹ️ ${PREFIX_HINT}ytdl is for single videos. For a playlist link use *${PREFIX_HINT}ytaudl*, *${PREFIX_HINT}ytvcdl* or *${PREFIX_HINT}ytvdl*.`,
+    fdUsage: '❌ *Please type what you want to search for.*\n\n' +
+        '📌 *Examples:*\n' +
+        `${PREFIX_HINT}ytfd suzume\n` +
+        `${PREFIX_HINT}ytfd suzume 94771234567@s.whatsapp.net\n` +
+        `${PREFIX_HINT}ytfd https://youtu.be/xxxxxxxxxxx 120363000000000000@g.us\n` +
+        `${PREFIX_HINT}ytfd <words | link> 123456789012345@lid\n\n` +
+        'ℹ️ Pick the video, then choose *Audio / Voice note / Video / Document*. The post (card + file) is sent to the jid / lid you give — or to this chat when you give none.',
+    searchPlaylistLink: (cmdName = 'ytdl') => `ℹ️ ${PREFIX_HINT}${cmdName} is for single videos. For a playlist link use *${PREFIX_HINT}ytaudl*, *${PREFIX_HINT}ytvcdl* or *${PREFIX_HINT}ytvdl*.`,
     searching: (q) => `🔎 Searching YouTube for *${shorten(q, 60)}*...`,
     noResults: (q) => `⚠️ No videos were found for *${shorten(q, 60)}*.`,
     searchFailed: (r) => `❌ *YouTube search failed.*${MSG.reason(r)}`,
     qualityFetching: '⏳ Getting the available video qualities...',
     qualitiesFailed: (r) => `❌ *Could not get the video qualities.*${MSG.reason(r)}`,
-    allTooLarge: `⚠️ Every quality of this video is bigger than ${MAX_VIDEO_MB} MB, so it cannot be sent.`,
+    allTooLarge: '⚠️ Every quality of this video is bigger than WhatsApp\'s 2 GB limit, so it cannot be sent.',
     expired: '⌛ This menu has expired. Please send the command again.',
     noButtons: '❌ Menus are not available here (the bot connection has no event listener).',
     invalid: '❌ *That does not look like a valid YouTube video or playlist link.*\n\nPlease check the link and try again.',
@@ -195,6 +212,7 @@ const MSG = {
     playlistEmpty: '⚠️ No available videos were found in this playlist.',
     error: '❌ Something went wrong while processing your request. Please try again later.',
     reason: (r) => (SHOW_ERROR_REASON && r ? `\n\n🔎 *Reason:* ${shorten(redact(r), 350)}` : ''),
+    sendFailed: (r, jid) => '❌ *The file was ready, but sending it failed.*' + (jid ? `\n📨 Target: ${jid}` : '') + MSG.reason(r),
     videoFailed: (r, mode) => `❌ *Could not download this ${mode === 'video' ? 'video' : 'audio'}.*${MSG.reason(r)}`,
     playlistFailed: (r) => `❌ *Could not read this playlist.*${MSG.reason(r)}\n\n` +
         'It may be private or deleted.',
@@ -1082,6 +1100,7 @@ function pickDownload(downloads, wanted) {
 
 // ─────────────── video downloading (streaming) ───────────────
 const STREAM_IDLE_MS = 30000;
+const WHATSAPP_MAX_BYTES = 2 * 1024 * 1024 * 1024; // not a setting: WhatsApp itself cannot send a file bigger than 2 GB
 
 // sends a GET request and resolves as soon as the headers arrive (follows redirects); the body is not read yet
 function openStream(url, headers = {}, redirects = 5, timeout = STREAM_IDLE_MS) {
@@ -1173,7 +1192,7 @@ function pipeBody(res, dest, onBytes) {
 // downloads a video with one streaming request; if the connection drops half-way it continues
 // from where it stopped (Range request) instead of starting again
 async function downloadVideoToFile(url, dest, { onProgress } = {}) {
-    const maxBytes = MAX_VIDEO_MB * 1048576;
+    const maxBytes = WHATSAPP_MAX_BYTES;
     await fs.promises.writeFile(dest, '');
 
     let current = url;
@@ -1218,7 +1237,7 @@ async function downloadVideoToFile(url, dest, { onProgress } = {}) {
             }
             if (total && total > maxBytes) {
                 res.resume();
-                throw Object.assign(new Error(`the file is too large (${formatBytes(total)})`), { tooLarge: true });
+                throw Object.assign(new Error(`the file is too large for WhatsApp (${formatBytes(total)}, the limit is 2 GB)`), { tooLarge: true });
             }
 
             let received = have;
@@ -1226,7 +1245,7 @@ async function downloadVideoToFile(url, dest, { onProgress } = {}) {
             await pipeBody(res, dest, (n) => {
                 received += n;
                 if (received > maxBytes) {
-                    return Object.assign(new Error(`the file is too large (over ${MAX_VIDEO_MB} MB)`), { tooLarge: true });
+                    return Object.assign(new Error('the file is too large for WhatsApp (over 2 GB)'), { tooLarge: true });
                 }
                 if (onProgress && total && !reporting) {
                     reporting = true;
@@ -1424,7 +1443,7 @@ async function buildVoicePayload(file, cleanup) {
     return null;
 }
 
-async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode = false) {
+async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode = false, forceDocument = false) {
     const cleanup = [];
     const asDocument = () => ({
         document: { url: file.path },
@@ -1434,7 +1453,9 @@ async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode 
 
     try {
         let payload;
-        if (voiceMode) {
+        if (forceDocument) {
+            payload = asDocument();
+        } else if (voiceMode) {
             payload = (await buildVoicePayload(file, cleanup)) || asDocument();
         } else {
             const fitsAudio = file.bytes <= AUDIO_MAX_MB * 1048576 && /^audio\//.test(file.mime);
@@ -1447,9 +1468,9 @@ async function sendAudioFile(conn, targetJid, file, title, quotedMsg, voiceMode 
 }
 
 // ─────────────── send video / document ───────────────
-async function sendVideoFile(conn, targetJid, file, meta, quotedMsg, asDocument) {
+async function sendVideoFile(conn, targetJid, file, meta, quotedMsg, asDocument, captionText) {
     const quality = meta.quality ? ` • ${meta.quality}` : '';
-    const caption = `🎬 *${shorten(meta.title, 150)}*\n📺 MP4${quality} • 📦 ${formatBytes(file.bytes)}`;
+    const caption = captionText || `🎬 *${shorten(meta.title, 150)}*\n📺 MP4${quality} • 📦 ${formatBytes(file.bytes)}`;
     const documentPayload = {
         document: { url: file.path },
         mimetype: 'video/mp4',
@@ -1466,10 +1487,128 @@ async function sendVideoFile(conn, targetJid, file, meta, quotedMsg, asDocument)
     }
 }
 
+// ═══════════════ PART 3b — the .ytfd card (the post style of a WhatsApp channel) ═══════════════
+//   picture (the video thumbnail) + this caption:
+//       ☘️ Title: …
+//
+//       ❒ 🎭 Views : …
+//       ❒ ⏱️ Duration : …
+//       ❒ 📅 Release Date : …
+//
+//       00:00 ———●————————— 4:28
+//
+//       • react line
+//
+//       ▎ channel name
+//   audio / voice note / audio document → the card is sent first, then the file
+//   video (or video document)           → the same text is the caption of the video
+
+function formatDuration(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    const two = (n) => String(n).padStart(2, '0');
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    return h ? `${h}:${two(m)}:${two(total % 60)}` : `${m}:${two(total % 60)}`;
+}
+
+// the music-player bar made of text:  00:00 ———●————————— 4:28
+const playBar = (duration) => `00:00 ${'—'.repeat(3)}●${'—'.repeat(9)} ${duration}`;
+
+// what the card shows about a video (a search result, or what lookupVideoMeta found)
+function cardOf(video) {
+    return {
+        id: video.id,
+        title: video.title,
+        views: video.views || 0,
+        duration: video.duration || (video.seconds ? formatDuration(video.seconds) : ''),
+        ago: video.ago || '',
+        thumbnail: video.thumbnail || '',
+    };
+}
+
+// lines that have no data (e.g. unknown views) are left out
+function buildCardText(card) {
+    const parts = [[`☘️ Title: ${shorten(card.title, 180)}`]];
+
+    const facts = [];
+    if (card.views) facts.push(`❒ 🎭 Vɪᴇᴡꜱ : ${card.views}`);
+    if (card.duration) facts.push(`❒ ⏱️ Dᴜʀᴀᴛɪᴏɴ : ${card.duration}`);
+    if (card.ago) facts.push(`❒ 📅 Rᴇʟᴇᴀꜱᴇ Dᴀᴛᴇ : ${card.ago}`);
+    if (facts.length) parts.push(facts);
+
+    if (card.duration) parts.push([playBar(card.duration)]);
+    if (CARD_REACT_LINE) parts.push([CARD_REACT_LINE]);
+    if (CARD_CHANNEL_NAME) parts.push([`▎ ${CARD_CHANNEL_NAME}`]);
+
+    return parts.map((lines) => lines.join('\n')).join('\n\n');
+}
+
+// the picture of the card: the thumbnail the search gave, else the biggest ones YouTube has (null = none worked)
+async function fetchThumbnail(card) {
+    const base = `${THUMB_BASE}/vi/${card.id}`;
+    const urls = [card.thumbnail, `${base}/maxresdefault.jpg`, `${base}/hqdefault.jpg`]
+        .filter((u, i, all) => u && all.indexOf(u) === i);
+
+    for (const url of urls) {
+        try {
+            const r = await request(url, { timeout: 15000 });
+            const type = String(r.headers['content-type'] || '');
+            if (r.status === 200 && /^image\//.test(type) && r.body.length > 1500) return r.body;
+        } catch { /* try the next one */ }
+    }
+    return null;
+}
+
+async function sendCard(conn, targetJid, card) {
+    const caption = buildCardText(card);
+    const image = await fetchThumbnail(card);
+    if (image) {
+        try {
+            return await conn.sendMessage(targetJid, { image, mimetype: 'image/jpeg', caption });
+        } catch (err) {
+            console.error('[ytaudl] sending the card picture failed, sending the text only:', err.message);
+        }
+    }
+    return conn.sendMessage(targetJid, { text: caption });
+}
+
+// length of an audio / video file in seconds, read from the banner of ffmpeg (null if ffmpeg is missing)
+async function probeDuration(filePath) {
+    const ffmpeg = await findFfmpeg();
+    if (!ffmpeg) return null;
+    try {
+        // no output file is given on purpose → ffmpeg only prints what it found and exits with an error
+        await execFilePromise(ffmpeg, ['-hide_banner', '-nostdin', '-i', filePath], { timeout: 30000, maxBuffer: 5 * 1024 * 1024 });
+        return null;
+    } catch (err) {
+        const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(String(err && err.stderr || ''));
+        return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Math.round(Number(m[3])) : null;
+    }
+}
+
+// the play bar needs a duration → when the search did not give one, it is read from the downloaded file
+async function withDuration(card, file) {
+    if (card.duration) return card;
+    const seconds = await probeDuration(file.path);
+    return seconds ? { ...card, duration: formatDuration(seconds) } : card;
+}
+
+// details of a video that was given as a link: the search finds it again by its id (views, date, length…)
+async function lookupVideoMeta(id) {
+    try {
+        const found = (await searchYouTube(id)).find((v) => v.id === id);
+        if (found) return found;
+    } catch { /* no details then */ }
+    const title = await fetchTitle(id);
+    return { id, title: title || `YouTube video ${id}`, author: '', duration: '', seconds: 0, views: 0, ago: '', thumbnail: '' };
+}
+
 // ─────────────── what a job downloads and how it is sent ───────────────
 const COMMAND_NAME = { audio: 'ytaudl', voice: 'ytvcdl', video: 'ytvdl' };
 
 function makeWorker(conn, targetJid, mode, options = {}) {
+    const card = options.card || null; // .ytfd: picture + details before the audio, caption of the video
+
     if (mode === 'video') {
         return {
             icon: '🎬',
@@ -1482,18 +1621,27 @@ function makeWorker(conn, targetJid, mode, options = {}) {
                 titleHint: options.title,
                 ...hooks,
             }),
-            send: (file, quoted) => sendVideoFile(conn, targetJid, file, file.meta, quoted, !!options.asDocument),
+            send: async (file, quoted) => {
+                const caption = card ? buildCardText(await withDuration(card, file)) : undefined;
+                return sendVideoFile(conn, targetJid, file, file.meta, quoted, !!options.asDocument, caption);
+            },
         };
     }
     const voice = mode === 'voice';
     return {
         icon: voice ? '🎤' : '🎵',
-        slowUpload: false,
+        slowUpload: !!card,
         infoLine: (info, compact) => (compact
             ? `📦 ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}`
             : `📦 Size: ${info.size || 'unknown'} | 🎧 ${info.type || 'MP3'}`),
         obtain: (videoId, dest, hooks) => obtainAudio(videoId, dest, hooks),
-        send: (file, quoted) => sendAudioFile(conn, targetJid, file, file.meta.title, quoted, voice),
+        send: async (file, quoted) => {
+            if (card) {
+                await sendCard(conn, targetJid, await withDuration(card, file));
+                await humanPresence(conn, targetJid, 500, 1200);
+            }
+            return sendAudioFile(conn, targetJid, file, file.meta.title, quoted, voice, !!options.asDocument);
+        },
     };
 }
 
@@ -1514,15 +1662,19 @@ function buildPlaylistHeader(playlistTitle, total, sent, extraLine, cmdName = 'y
 
 // ─────────────── single video job ───────────────
 // mode: 'audio' | 'voice' | 'video'
-// options (video only): { info, download, wanted, asDocument, title }
+// options: { title, asDocument (audio / video sent as a document),
+//            info + download (video: the quality that was chosen),
+//            card (.ytfd: the details for the card), statusJid (where the progress is shown — default targetJid), noQuote }
 async function downloadOne(conn, targetJid, mek, videoId, say, mode, options = {}) {
     const worker = makeWorker(conn, targetJid, mode, options);
     const icon = worker.icon;
+    // .ytfd: the progress stays in the chat of the command, only the finished post goes to targetJid
+    const statusJid = options.statusJid || targetJid;
 
     let statusMsg = null;
     try {
         // Same as playlist: sending an initial processing message and editing it later
-        statusMsg = await conn.sendMessage(targetJid, { text: '⏳ Processing your request, please wait...' }, mek ? { quoted: mek } : undefined);
+        statusMsg = await conn.sendMessage(statusJid, { text: '⏳ Processing your request, please wait...' }, mek ? { quoted: mek } : undefined);
     } catch {
         return say(MSG.error);
     }
@@ -1534,7 +1686,7 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode, options = {
     const fallbackTitle = options.title || `YouTube ${mode === 'video' ? 'video' : 'audio'} ${videoId}`;
 
     const update = async (text) => {
-        const ok = await editMessage(conn, targetJid, statusKey, text);
+        const ok = await editMessage(conn, statusJid, statusKey, text);
         if (!ok) await say(text).catch(() => {});
     };
 
@@ -1567,20 +1719,30 @@ async function downloadOne(conn, targetJid, mek, videoId, say, mode, options = {
             },
         });
 
+        const sentTo = statusJid !== targetJid ? `\n📨 Sent to: ${targetJid}` : '';
         const doneText =
             `✅ ${icon} *${shorten(file.meta.title, 100)}*\n` +
-            `📦 ${formatBytes(file.bytes)}`;
+            `📦 ${formatBytes(file.bytes)}${sentTo}`;
 
         if (worker.slowUpload) {
-            await update(`📤 *Uploading to WhatsApp...*\n${icon} ${shorten(file.meta.title, 100)}\n📦 ${formatBytes(file.bytes)}`);
+            await update(
+                `📤 *Uploading to WhatsApp...*\n${icon} ${shorten(file.meta.title, 100)}\n📦 ${formatBytes(file.bytes)}` +
+                (sentTo ? `\n📨 To: ${targetJid}` : '')
+            );
         } else {
             await update(doneText);
         }
 
         await humanPresence(conn, targetJid);
 
-        // Reply to the same status message we edited
-        await worker.send(file, statusMsg);
+        try {
+            // Reply to the status message we edited (not for .ytfd posts: they go out clean)
+            await worker.send(file, options.noQuote ? undefined : statusMsg);
+        } catch (err) {
+            console.error('[ytaudl] sending failed:', redact(err.message));
+            await update(MSG.sendFailed(err.message, sentTo ? targetJid : ''));
+            return;
+        }
         if (worker.slowUpload) await update(doneText);
     } catch (err) {
         console.error('[ytaudl] video job failed:', redact(err.message));
@@ -2120,19 +2282,24 @@ function formatMenu(video) {
     const meta = videoLine(video);
     return {
         title: '🎬 Choose format',
-        text: `🎬 *${shorten(video.title, 100)}*${meta ? `\n${meta}` : ''}\n\n*What do you want?*`,
+        text:
+            `🎬 *${shorten(video.title, 100)}*${meta ? `\n${meta}` : ''}\n\n*What do you want?*\n` +
+            'ℹ️ A video as a document: pick 🎬 Video, then 📄 Document.',
+        listLabel: 'Select format',
+        listTitle: 'Formats',
         options: [
-            { value: 'audio', label: '🎧 Audio' },
-            { value: 'voice', label: '🎤 Voice note' },
-            { value: 'video', label: '🎬 Video' },
+            { value: 'audio', label: '🎧 Audio', desc: 'Plays inside the chat' },
+            { value: 'voice', label: '🎤 Voice note', desc: 'Sent like a recorded voice message' },
+            { value: 'video', label: '🎬 Video', desc: 'You choose the quality next' },
+            { value: 'doc', label: '📄 Audio document', desc: 'The audio file sent as a document' },
         ],
     };
 }
 
-// null when every quality is bigger than MAX_VIDEO_MB
+// null when every quality is bigger than what WhatsApp can send (2 GB)
 function qualityMenu(session) {
     const { info, video } = session;
-    const limit = MAX_VIDEO_MB * 1048576;
+    const limit = WHATSAPP_MAX_BYTES;
     const options = [];
     const hidden = [];
 
@@ -2152,7 +2319,7 @@ function qualityMenu(session) {
     const lines = [`🎞️ *${shorten(video.title || info.title || 'Video', 100)}*`];
     if (info.author) lines.push(`📺 ${shorten(info.author, 40)}`);
     lines.push('', '*Choose the video quality:*');
-    if (hidden.length) lines.push(`⚠️ Not offered (over ${MAX_VIDEO_MB} MB): ${hidden.join(', ')}`);
+    if (hidden.length) lines.push(`⚠️ Not offered (over WhatsApp's 2 GB limit): ${hidden.join(', ')}`);
     return { title: '🎞️ Video quality', text: lines.join('\n'), options, listLabel: 'Select quality', listTitle: 'Qualities' };
 }
 
@@ -2213,18 +2380,25 @@ async function launch(conn, session, mode, run) {
     jobs.set(targetJid, job);
     endSession(session);
 
-    const quoted = targetJid === promptJid ? session.quoted : undefined;
-    const sayTarget = (text, quote = false) =>
-        conn.sendMessage(targetJid, { text }, quote && quoted ? { quoted } : undefined);
+    // .ytfd: the progress stays in the chat of the command, only the finished post goes to targetJid
+    const statusJid = session.card ? promptJid : targetJid;
+    const quoted = statusJid === promptJid ? session.quoted : undefined;
+    const say = (text, quote = false) =>
+        conn.sendMessage(statusJid, { text }, quote && quoted ? { quoted } : undefined);
 
     try {
-        if (targetJid !== promptJid) await note(`✅ Forwarding download to: ${targetJid}`);
-        await run(job, sayTarget, quoted);
+        if (!session.card && targetJid !== promptJid) await note(`✅ Forwarding download to: ${targetJid}`);
+        await run(job, say, quoted);
     } finally {
         jobs.delete(targetJid);
     }
     return true;
 }
+
+// extra options for downloadOne: .ytfd sessions send the card and keep the progress in their own chat
+const cardOptions = (session) => (session.card
+    ? { card: cardOf(session.video), statusJid: session.promptJid, noQuote: true }
+    : {});
 
 // asks the API for the qualities of session.video, then shows the quality menu
 async function askQuality(conn, session) {
@@ -2276,13 +2450,15 @@ const STEP_HANDLERS = {
         await showMenu(conn, session, 'fmt', formatMenu(video));
     },
 
-    // audio / voice note start right away, video continues with the quality
+    // audio / voice note / audio document start right away, video continues with the quality
     async fmt(conn, session, value) {
         if (value === 'video') return askQuality(conn, session);
         const mode = value === 'voice' ? 'voice' : 'audio';
+        const asDocument = value === 'doc';
         const { video, targetJid } = session;
-        await launch(conn, session, mode, (job, sayTarget, quoted) =>
-            downloadOne(conn, targetJid, quoted, video.id, sayTarget, mode, { title: video.title }));
+        const extra = cardOptions(session);
+        await launch(conn, session, mode, (job, say, quoted) =>
+            downloadOne(conn, targetJid, quoted, video.id, say, mode, { title: video.title, asDocument, ...extra }));
     },
 
     // video quality (single video)
@@ -2306,14 +2482,15 @@ const STEP_HANDLERS = {
 
         if (session.kind === 'plist') {
             const { playlist, wanted } = session;
-            await launch(conn, session, 'video', (job, sayTarget, quoted) =>
-                downloadPlaylist(conn, targetJid, quoted, null, job, sayTarget, 'video', null, { playlist, wanted, asDocument }));
+            await launch(conn, session, 'video', (job, say, quoted) =>
+                downloadPlaylist(conn, targetJid, quoted, null, job, say, 'video', null, { playlist, wanted, asDocument }));
             return;
         }
         const { video, info, download } = session;
-        await launch(conn, session, 'video', (job, sayTarget, quoted) =>
-            downloadOne(conn, targetJid, quoted, video.id, sayTarget, 'video', {
-                info, download, asDocument, title: video.title,
+        const extra = cardOptions(session);
+        await launch(conn, session, 'video', (job, say, quoted) =>
+            downloadOne(conn, targetJid, quoted, video.id, say, 'video', {
+                info, download, asDocument, title: video.title, ...extra,
             }));
     },
 };
@@ -2423,35 +2600,45 @@ async function startVideoMenu(conn, mek, opts, { videoId, listId, linkVideoId, t
     await edit(`📋 *${shorten(playlist.title, 80)}* — ${playlist.videos.length} videos ✅`);
 }
 
-// .ytdl <words | link> [jid]: search → pick a video → Audio / Voice note / Video
-async function handleSearchCommand(conn, mek, m, opts) {
+// chats a post can be sent to: a user (jid), a group, a LID — and a channel for .ytfd
+const JID_RE = /@(g\.us|s\.whatsapp\.net|lid)$/;
+const FD_JID_RE = /@(g\.us|s\.whatsapp\.net|lid|newsletter)$/;
+
+// .ytdl / .ytfd <words | link> [jid / lid]: search → pick a video → Audio / Voice note / Video / Document
+// fancy = .ytfd: a card is sent with the audio (caption of the video), the post goes to the jid / lid
+async function handleSearchCommand(conn, mek, m, opts, fancy = false) {
     const { from } = opts;
+    const cmdName = fancy ? 'ytfd' : 'ytdl';
     const say = (text, quote = false) =>
         conn.sendMessage(from, { text }, quote ? { quoted: mek } : undefined);
 
     try {
         const words = String(opts.q || '').trim().split(/\s+/).filter(Boolean);
         let targetJid = from;
-        if (words.length && /@(g\.us|s\.whatsapp\.net|lid)$/.test(words[words.length - 1])) {
-            targetJid = words.pop();
-        }
+        const jidAt = words.findIndex((w) => (fancy ? FD_JID_RE : JID_RE).test(w));
+        if (jidAt !== -1) targetJid = words.splice(jidAt, 1)[0];
         const query = words.join(' ');
 
-        if (!query) return await say(MSG.searchUsage, true);
+        if (!query) return await say(fancy ? MSG.fdUsage : MSG.searchUsage, true);
         if (!ensureListener(conn)) return await say(MSG.noButtons, true);
 
-        const base = { promptJid: from, targetJid, owner: senderOf(opts, mek), quoted: mek };
+        const base = { promptJid: from, targetJid, owner: senderOf(opts, mek), quoted: mek, card: fancy };
 
         // a YouTube link needs no search → straight to the format buttons
         const linkId = extractVideoId(query);
         if (linkId) {
-            const title = await fetchTitle(linkId);
-            const video = { id: linkId, title: title || `YouTube video ${linkId}`, author: '', duration: '', views: 0 };
+            let video;
+            if (fancy) {
+                video = await lookupVideoMeta(linkId); // the card needs views / date / length too
+            } else {
+                const title = await fetchTitle(linkId);
+                video = { id: linkId, title: title || `YouTube video ${linkId}`, author: '', duration: '', views: 0 };
+            }
             const session = createSession({ ...base, kind: 'single', video });
             return await showMenu(conn, session, 'fmt', formatMenu(video));
         }
         if (/^(https?:\/\/)?((www|m|music)\.)?(youtube\.com|youtu\.be)\//i.test(query)) {
-            return await say(MSG.searchPlaylistLink, true);
+            return await say(MSG.searchPlaylistLink(cmdName), true);
         }
 
         const status = await conn.sendMessage(from, { text: MSG.searching(query) }, { quoted: mek }).catch(() => null);
@@ -2485,7 +2672,16 @@ cmd({
     react: '🔎',
     filename: __filename,
 },
-(conn, mek, m, opts) => handleSearchCommand(conn, mek, m, opts));
+(conn, mek, m, opts) => handleSearchCommand(conn, mek, m, opts, false));
+
+cmd({
+    pattern: 'ytfd',
+    desc: 'Search YouTube and send a channel-style post (card + audio / voice note / video / document) to any chat, group or channel',
+    category: 'download',
+    react: '🎴',
+    filename: __filename,
+},
+(conn, mek, m, opts) => handleSearchCommand(conn, mek, m, opts, true));
 
 cmd({
     pattern: 'ytaudl',
@@ -2522,4 +2718,6 @@ module.exports = {
     searchYouTube,
     fetchVideoInfo,
     downloadVideoToFile,
+    buildCardText,
+    lookupVideoMeta,
 };
