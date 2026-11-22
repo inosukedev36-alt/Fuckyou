@@ -60,7 +60,7 @@ const CONFIG = {
   SESSION_MIN: 30,         // minutes a list stays "replyable"
   DELAY_MS: 4000,          // pause between chapters in batch mode (helps avoid WhatsApp spam limits)
   IMG_CONCURRENCY: 5,      // parallel page downloads
-  ONLY_REQUESTER: false,   // true = only the person who ran .manhwa can reply to the lists
+  ONLY_REQUESTER: true,   // true = only the person who ran .manhwa can reply to the lists
   TARGET_OWNER_ONLY: true, // true = sending to ANOTHER group needs isOwner (if your bot provides it)
   PDF_ONLY: true,          // true = send ONLY the renamed PDFs (no caption / quote / status chatter); false = SS-style captions
   GROUP_THUMBNAIL: true,   // PDF preview picture = the destination group's profile photo (kept when the message is forwarded)
@@ -695,7 +695,7 @@ cmd({
   filename: __filename,
   // [gf-integration] she must not hand this adult-content downloader to ordinary users, so it is NOT offered as one of her tools (owner / sudo type it);
   // and the number the owner replies with is for this plugin, not a chat message for her:
-  gf: false,
+  gf: true,
   claimReplies: true,
 }, async (conn, mek, m, { from, q, isOwner }) => {
   try {
