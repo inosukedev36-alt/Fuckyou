@@ -1,494 +1,319 @@
 <!DOCTYPE html>
-<html lang="si">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BLACK QUEEN MD V01— Pair</title>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;600&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0a0f0a;
-            --surface: #111811;
-            --border: #1e2e1e;
-            --green: #00e676;
-            --green-dim: #00c853;
-            --green-glow: rgba(0, 230, 118, 0.15);
-            --green-glow-strong: rgba(0, 230, 118, 0.3);
-            --text: #e8f5e9;
-            --muted: #4a6a4a;
-            --error: #ff5252;
-            --error-glow: rgba(255, 82, 82, 0.15);
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#f6e8ff">
+<title>SHIRO MD ✨ Pair</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌸</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=M+PLUS+Rounded+1c:wght@700;800&display=swap" rel="stylesheet">
+<noscript><style>.card{transform:none!important}</style></noscript>
+<style>
+@property --a{syntax:'<angle>';inherits:false;initial-value:0deg}
+:root{--pink:#ff8fab;--soft:#ffc9de;--purple:#c084fc;--text:#5b4b6b;--muted:#a89bb8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Quicksand',sans-serif;min-height:100vh;min-height:100dvh;display:grid;place-items:center;color:var(--text);overflow-x:hidden;background:linear-gradient(120deg,#fff0f7,#efe4ff,#e2f4ff,#fff0f7);background-size:300% 300%;animation:sky 20s ease infinite}
+@keyframes sky{0%,100%{background-position:0 50%}50%{background-position:100% 50%}}
+body::before,body::after{content:'';position:fixed;width:42vmax;height:42vmax;border-radius:50%;filter:blur(60px);opacity:.5;pointer-events:none;animation:drift 16s ease-in-out infinite alternate}
+body::before{background:#ffc9de;top:-14vmax;left:-12vmax}
+body::after{background:#c9b8ff;right:-14vmax;bottom:-16vmax;animation-delay:-8s}
+@keyframes drift{to{transform:translate(5vmax,4vmax) scale(1.15)}}
+.petal,.star,.bp{position:fixed;font-style:normal;pointer-events:none}
+.petal{top:-40px;z-index:1;color:var(--pink);opacity:.8;animation:fall linear infinite}
+@keyframes fall{0%{transform:translate(0,0) rotate(0)}50%{transform:translate(var(--dx),55vh) rotate(200deg)}100%{transform:translate(0,112vh) rotate(380deg)}}
+.star{text-shadow:0 0 8px currentColor;animation:tw ease-in-out infinite}
+@keyframes tw{0%,100%{opacity:.1;transform:scale(.5)}50%{opacity:1;transform:scale(1.2) rotate(25deg)}}
+.bp{z-index:9;font-size:20px}
 
-        * {
-            margin: 0; padding: 0;
-            box-sizing: border-box;
-        }
+/* panel */
+.wrap{position:relative;z-index:2;width:min(420px,calc(100% - 40px));margin:20px 0}
+.card{position:relative;padding:26px 24px 24px;border-radius:30px;text-align:center;background:rgba(255,255,255,.76);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 24px 60px -24px rgba(192,132,252,.55),0 8px 24px -12px rgba(255,143,171,.4);transform:translateY(var(--up,-130vh));transition:transform 1.2s cubic-bezier(.3,1.35,.5,1),opacity .4s,filter .4s}
+.card::before{content:'';position:absolute;inset:0;padding:3px;border-radius:inherit;pointer-events:none;background:conic-gradient(from var(--a),#ff8fab,#c084fc,#7dd3fc,#ffc9de,#ff8fab);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:rot 6s linear infinite}
+@keyframes rot{to{--a:360deg}}
+.lt .card{opacity:.3;filter:blur(2px);pointer-events:none}
+.cord{position:absolute;left:50%;top:100%;width:4px;height:80px;margin-left:-2px;border-radius:2px;background:linear-gradient(var(--pink),var(--purple));transition:opacity .5s}
+.ring{position:absolute;left:50%;bottom:-20px;width:24px;height:24px;margin-left:-12px;border:5px solid var(--pink);border-radius:50%;background:#fff;box-shadow:0 4px 10px -2px rgba(192,132,252,.6)}
+.dn .cord{opacity:0}
+h1{font:800 2rem 'M PLUS Rounded 1c',sans-serif;letter-spacing:2px;background:linear-gradient(90deg,#ff8fab,#c084fc,#7dd3fc,#ff8fab);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:shine 6s linear infinite}
+@keyframes shine{to{background-position:300% 0}}
+.sub{margin:2px 0 20px;font-size:.78rem;font-weight:700;color:var(--muted)}
+.dot{display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:var(--pink);box-shadow:0 0 8px var(--pink);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.4;transform:scale(.65)}}
+.label{display:block;margin-bottom:8px;font-size:.85rem;font-weight:700;color:var(--purple)}
+.field{display:flex;align-items:center;margin-bottom:16px;overflow:hidden;border:2px solid #f0e0f5;border-radius:18px;background:#fff;transition:.25s}
+.field:focus-within{border-color:var(--pink);box-shadow:0 0 0 4px rgba(255,143,171,.18)}
+.pre{display:flex;align-items:center;height:52px;padding:0 16px;border-right:2px solid #f0e0f5;background:#fff5fa;color:var(--pink);font:700 1rem 'M PLUS Rounded 1c',sans-serif}
+input{flex:1;min-width:0;height:52px;padding:0 16px;border:0;outline:0;background:transparent;color:var(--text);font:600 1rem 'Quicksand',sans-serif;letter-spacing:.5px}
+input::placeholder{color:var(--muted);font-weight:500;font-size:.82rem;letter-spacing:0}
+.btn{position:relative;overflow:hidden;width:100%;height:52px;border:0;border-radius:18px;color:#fff;cursor:pointer;background:linear-gradient(135deg,#ff8fab,#c084fc);font:800 .95rem 'M PLUS Rounded 1c',sans-serif;box-shadow:0 8px 24px -8px rgba(192,132,252,.7);transition:.2s}
+.btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 12px 32px -8px rgba(192,132,252,.9)}
+.btn:active:not(:disabled){transform:scale(.97)}
+.btn:disabled{opacity:.8;cursor:wait}
+.btn::before{content:'';position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);animation:glint 3.5s ease-in-out infinite}
+@keyframes glint{60%,100%{left:130%}}
+.btn span{position:relative}
+.btn:focus-visible,.copy:focus-visible{outline:3px solid var(--purple);outline-offset:3px}
+.dots b{display:inline-block;width:8px;height:8px;margin:0 2px;border-radius:50%;background:#fff;animation:hopdot .5s ease-in-out infinite alternate}
+.dots b:nth-child(2){animation-delay:.15s}
+.dots b:nth-child(3){animation-delay:.3s}
+@keyframes hopdot{to{transform:translateY(-7px)}}
+.result{display:none;margin-top:16px}
+.result.show{display:block;animation:pop .5s cubic-bezier(.34,1.56,.64,1)}
+@keyframes pop{from{opacity:0;transform:scale(.7) translateY(8px)}}
+.err{padding:14px 16px;border:2px solid #ff6b9d;border-radius:16px;background:#ffeaf4;color:#e0457f;font-size:.85rem;font-weight:600;line-height:1.5;animation:shake .5s}
+@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 
-        body {
-            background: var(--bg);
-            color: var(--text);
-            font-family: 'DM Sans', sans-serif;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-        }
+/* Shiro */
+#shiro{position:fixed;left:0;top:0;z-index:6;width:150px;height:190px;opacity:0;pointer-events:none;transform:translate(var(--x,0px),var(--y,0px));transition:transform var(--t,1s) var(--e,cubic-bezier(.4,0,.2,1)),opacity .6s}
+#shiro.in{opacity:1}
+#shiro svg{display:block;width:100%;height:100%;overflow:visible;filter:drop-shadow(0 8px 10px rgba(192,132,252,.35));animation:breathe 3s ease-in-out infinite}
+@keyframes breathe{50%{transform:translateY(-3px)}}
+#shiro.walk svg{animation:step .3s ease-in-out infinite}
+@keyframes step{50%{transform:translateY(-9px) rotate(3deg)}}
+#shiro[data-m=angry] svg{animation:shake .35s infinite}
+.tailL{transform-origin:30px 56px;animation:swL 3s ease-in-out infinite}
+.tailR{transform-origin:90px 56px;animation:swR 3s ease-in-out infinite}
+@keyframes swL{50%{transform:rotate(7deg)}}
+@keyframes swR{50%{transform:rotate(-7deg)}}
+.earL,.earR{animation:twitch 5s infinite}
+.earL{transform-origin:38px 32px}
+.earR{transform-origin:82px 32px;animation-delay:1.6s}
+@keyframes twitch{0%,90%,100%{transform:rotate(0)}93%{transform:rotate(-10deg)}96%{transform:rotate(3deg)}}
+.eN{transform-box:fill-box;transform-origin:center;animation:blink 4.6s infinite}
+@keyframes blink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.08)}}
+.tail{transform-origin:88px 146px;animation:flick 2.4s ease-in-out infinite}
+@keyframes flick{50%{transform:rotate(9deg)}}
+.up{transition:transform .4s}
+.armL,.armR{transition:transform .35s}
+.legS,.eH,.eA,.mH,.mA{display:none}
+[data-p=sit] .up{transform:translateY(13px)}
+[data-p=sit] .legT{display:none}
+[data-p=sit] .legS{display:inline}
+[data-p=sit] .armL{transform:rotate(-22deg)}
+[data-p=sit] .armR{transform:rotate(22deg)}
+[data-p=hold] .armL{transform:rotate(-40deg)}
+[data-p=hold] .armR{transform:rotate(40deg)}
+[data-p=angry] .armL{transform:rotate(30deg)}
+[data-p=angry] .armR{transform:rotate(-30deg)}
+[data-p=up] .armL{transform:rotate(140deg)}
+[data-p=up] .armR{transform:rotate(-140deg)}
+[data-p=up] .legT{transform-origin:70px 146px;animation:dangle .45s ease-in-out infinite alternate}
+@keyframes dangle{to{transform:rotate(8deg)}}
+[data-p=wave] .armR{animation:wave .5s ease-in-out infinite alternate}
+@keyframes wave{from{transform:rotate(-130deg)}to{transform:rotate(-165deg)}}
+[data-m=happy] .eN,[data-m=happy] .mN,[data-m=angry] .mN{display:none}
+[data-m=happy] .eH,[data-m=happy] .mH,[data-m=angry] .eA,[data-m=angry] .mA{display:inline}
+.bl{fill:#ff8fab;opacity:.5}
+[data-m=happy] .bl{opacity:.85}
+[data-m=angry] .bl{fill:#ff5d6c;opacity:.75}
+.vein{position:absolute;top:2px;right:-6px;display:none;font-size:30px;font-style:normal;animation:pulse .5s infinite alternate}
+[data-m=angry] .vein{display:block}
 
-        /* Animated grid background */
-        body::before {
-            content: '';
-            position: fixed;
-            inset: 0;
-            background-image:
-                linear-gradient(var(--border) 1px, transparent 1px),
-                linear-gradient(90deg, var(--border) 1px, transparent 1px);
-            background-size: 48px 48px;
-            opacity: 0.5;
-            z-index: 0;
-        }
+/* letter */
+.letter{position:absolute;left:50%;top:132px;width:min(300px,88vw);padding:20px 18px 14px;text-align:center;border:2px solid var(--soft);border-radius:8px;background:repeating-linear-gradient(#fffdf8 0 27px,#f7e6ee 27px 28px);box-shadow:0 18px 40px -14px rgba(192,132,252,.7);opacity:0;pointer-events:none;transform:translateX(-50%) scale(.08) rotate(-10deg);transform-origin:50% 0;transition:transform .7s cubic-bezier(.34,1.5,.64,1),opacity .3s}
+.letter.open{opacity:1;pointer-events:auto;transform:translateX(-50%) rotate(-1.5deg)}
+.lh,.sig{font:800 1rem 'M PLUS Rounded 1c',sans-serif;color:var(--pink)}
+.lp{margin-top:8px;font-size:.82rem;font-weight:600;line-height:1.5}
+.lp.sm{font-size:.74rem;color:var(--muted)}
+.code{display:flex;flex-wrap:wrap;justify-content:center;gap:3px;margin:8px 0 2px;font:800 clamp(1.5rem,7.5vw,2rem) 'M PLUS Rounded 1c',monospace}
+.ch{display:inline-block;text-shadow:0 2px 10px rgba(192,132,252,.35);animation:chpop .55s cubic-bezier(.34,1.56,.64,1) both}
+.ch:nth-child(odd){color:var(--pink)}
+.ch:nth-child(even){color:var(--purple)}
+@keyframes chpop{from{opacity:0;transform:translateY(18px) scale(.3) rotate(-25deg)}}
+.acts{display:flex;justify-content:center;gap:8px;margin-top:12px}
+.copy{padding:8px 18px;border:2px solid var(--soft);border-radius:12px;background:#fff;color:var(--pink);cursor:pointer;font:700 .78rem 'M PLUS Rounded 1c',sans-serif;transition:.2s}
+.copy:hover{background:var(--pink);border-color:var(--pink);color:#fff}
+.copy.ok{background:var(--purple);border-color:var(--purple);color:#fff}
+.sig{margin-top:10px;font-size:.8rem;color:var(--purple)}
 
-        /* Corner glow */
-        body::after {
-            content: '';
-            position: fixed;
-            bottom: -150px;
-            right: -150px;
-            width: 500px;
-            height: 500px;
-            background: radial-gradient(circle, var(--green-glow) 0%, transparent 70%);
-            z-index: 0;
-            pointer-events: none;
-        }
-
-        .container {
-            position: relative;
-            z-index: 1;
-            width: 100%;
-            max-width: 420px;
-            padding: 24px;
-        }
-
-        /* Header */
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 36px;
-        }
-
-        .brand-icon {
-            width: 44px;
-            height: 44px;
-            background: var(--green);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 0 20px var(--green-glow-strong);
-            flex-shrink: 0;
-        }
-
-        .brand-icon svg {
-            width: 26px;
-            height: 26px;
-            fill: #0a0f0a;
-        }
-
-        .brand-text h1 {
-            font-family: 'Space Mono', monospace;
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: var(--text);
-            letter-spacing: -0.5px;
-        }
-
-        .brand-text p {
-            font-size: 0.75rem;
-            color: var(--muted);
-            margin-top: 2px;
-        }
-
-        /* Card */
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 28px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, var(--green), transparent);
-            opacity: 0.6;
-        }
-
-        .card-label {
-            font-size: 0.7rem;
-            font-family: 'Space Mono', monospace;
-            color: var(--muted);
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            margin-bottom: 20px;
-        }
-
-        /* Input group */
-        .input-group {
-            display: flex;
-            align-items: center;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            overflow: hidden;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            margin-bottom: 14px;
-        }
-
-        .input-group:focus-within {
-            border-color: var(--green);
-            box-shadow: 0 0 0 3px var(--green-glow);
-        }
-
-        .input-prefix {
-            padding: 0 14px;
-            font-family: 'Space Mono', monospace;
-            font-size: 0.85rem;
-            color: var(--muted);
-            border-right: 1px solid var(--border);
-            height: 48px;
-            display: flex;
-            align-items: center;
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-
-        input[type="tel"] {
-            flex: 1;
-            background: transparent;
-            border: none;
-            outline: none;
-            color: var(--text);
-            font-family: 'Space Mono', monospace;
-            font-size: 1rem;
-            padding: 0 14px;
-            height: 48px;
-            letter-spacing: 1px;
-        }
-
-        input[type="tel"]::placeholder {
-            color: var(--muted);
-            font-family: 'DM Sans', sans-serif;
-            letter-spacing: 0;
-            font-size: 0.875rem;
-        }
-
-        /* Button */
-        .btn {
-            width: 100%;
-            height: 48px;
-            background: var(--green);
-            border: none;
-            border-radius: 10px;
-            color: #0a0f0a;
-            font-family: 'Space Mono', monospace;
-            font-weight: 700;
-            font-size: 0.85rem;
-            letter-spacing: 1px;
-            cursor: pointer;
-            transition: opacity 0.15s, transform 0.1s, box-shadow 0.2s;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .btn:hover:not(:disabled) {
-            box-shadow: 0 0 24px var(--green-glow-strong);
-            transform: translateY(-1px);
-        }
-
-        .btn:active:not(:disabled) {
-            transform: translateY(0);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .btn .btn-inner {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        /* Spinner */
-        .spinner {
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(10,15,10,0.3);
-            border-top-color: #0a0f0a;
-            border-radius: 50%;
-            animation: spin 0.7s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Result area */
-        .result {
-            margin-top: 20px;
-            display: none;
-        }
-
-        .result.show {
-            display: block;
-            animation: fadeUp 0.4s ease;
-        }
-
-        @keyframes fadeUp {
-            from { opacity: 0; transform: translateY(8px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Code display */
-        .code-box {
-            background: var(--bg);
-            border: 1px solid var(--green);
-            border-radius: 12px;
-            padding: 20px;
-            text-align: center;
-            position: relative;
-            box-shadow: 0 0 32px var(--green-glow);
-        }
-
-        .code-label {
-            font-size: 0.65rem;
-            font-family: 'Space Mono', monospace;
-            color: var(--muted);
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-        }
-
-        .code-value {
-            font-family: 'Space Mono', monospace;
-            font-size: 2.2rem;
-            font-weight: 700;
-            color: var(--green);
-            letter-spacing: 6px;
-            text-shadow: 0 0 24px var(--green-glow-strong);
-            word-break: break-all;
-        }
-
-        .copy-btn {
-            margin-top: 14px;
-            background: transparent;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--muted);
-            font-family: 'Space Mono', monospace;
-            font-size: 0.7rem;
-            padding: 6px 14px;
-            cursor: pointer;
-            transition: all 0.2s;
-            letter-spacing: 1px;
-        }
-
-        .copy-btn:hover {
-            border-color: var(--green);
-            color: var(--green);
-        }
-
-        .copy-btn.copied {
-            border-color: var(--green);
-            color: var(--green);
-        }
-
-        /* Instructions */
-        .instructions {
-            margin-top: 14px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 14px 16px;
-        }
-
-        .instructions p {
-            font-size: 0.78rem;
-            color: var(--muted);
-            line-height: 1.7;
-        }
-
-        .instructions p span {
-            color: var(--green);
-            font-family: 'Space Mono', monospace;
-        }
-
-        /* Error */
-        .error-box {
-            background: var(--error-glow);
-            border: 1px solid var(--error);
-            border-radius: 10px;
-            padding: 14px 16px;
-            font-size: 0.82rem;
-            color: var(--error);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        /* Pulse dot */
-        .pulse-dot {
-            width: 8px;
-            height: 8px;
-            background: var(--green);
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-            animation: pulse 1.4s ease-in-out infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50%        { opacity: 0.4; transform: scale(0.7); }
-        }
-
-        /* Footer */
-        .footer {
-            text-align: center;
-            margin-top: 24px;
-            font-size: 0.7rem;
-            color: var(--muted);
-            font-family: 'Space Mono', monospace;
-        }
-    </style>
+/* dialogue box */
+.dlg{position:fixed;left:50%;bottom:14px;z-index:8;width:min(560px,calc(100% - 28px));min-height:66px;padding:18px 22px 14px;border:2px solid #fff;border-radius:22px;background:rgba(255,255,255,.84);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 12px 34px -14px rgba(192,132,252,.7);font-size:.95rem;font-weight:700;line-height:1.5;pointer-events:none;opacity:0;transform:translate(-50%,20px);transition:.4s}
+.dlg.on{opacity:1;transform:translate(-50%,0)}
+.dlg b{position:absolute;left:18px;top:-14px;padding:3px 14px;border-radius:99px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font:800 .8rem 'M PLUS Rounded 1c',sans-serif}
+.dlg::after{content:'▼';position:absolute;right:16px;bottom:8px;font-size:.65rem;color:var(--pink);animation:nudge .7s ease-in-out infinite alternate}
+@keyframes nudge{to{transform:translateY(3px)}}
+@media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important;transition:none!important}}
+</style>
 </head>
 <body>
-<div class="container">
-
-    <div class="brand">
-        <div class="brand-icon">
-            <!-- WhatsApp-like icon -->
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.978-1.41A9.956 9.956 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2zm0 18a8 8 0 01-4.078-1.117l-.292-.174-3.037.86.862-3.123-.191-.305A8 8 0 1112 20zm4.406-5.845c-.241-.121-1.428-.705-1.65-.786-.22-.081-.38-.121-.54.122-.16.242-.62.785-.76.946-.14.16-.28.18-.52.06-.241-.12-1.018-.375-1.939-1.198-.717-.64-1.201-1.43-1.342-1.672-.14-.242-.015-.373.105-.493.108-.108.24-.283.362-.424.12-.142.16-.243.24-.404.08-.161.04-.303-.02-.424-.06-.12-.54-1.303-.74-1.784-.195-.468-.392-.404-.54-.412l-.46-.008c-.16 0-.42.06-.64.303-.22.242-.84.822-.84 2.003 0 1.18.86 2.322.98 2.483.12.16 1.693 2.585 4.103 3.625.573.247 1.02.395 1.368.505.575.183 1.098.157 1.512.095.461-.069 1.42-.58 1.62-1.14.2-.562.2-1.043.14-1.143-.06-.1-.22-.16-.46-.282z"/>
-            </svg>
-        </div>
-        <div class="brand-text">
-            <h1>BLACK QUEEN MD V1</h1>
-            <p><span class="pulse-dot"></span>Pairing System</p>
-        </div>
-    </div>
-
-    <div class="card">
-        <div class="card-label">// connect device</div>
-
-        <div class="input-group">
-            <div class="input-prefix">+</div>
-            <input
-                type="tel"
-                id="phoneInput"
-                placeholder="94XXXXXXXXX (country code + number)"
-                maxlength="20"
-            />
-        </div>
-
-        <button class="btn" id="pairBtn" onclick="getPairingCode()">
-            <div class="btn-inner" id="btnContent">
-                <span>GET PAIRING CODE</span>
-            </div>
-        </button>
-
-        <div class="result" id="result"></div>
-    </div>
-
-    <div class="footer">BLACK QUEEN MD V1 &nbsp;/&nbsp; SECURE SESSION LINK</div>
+<div class="wrap">
+  <main class="card" id="card">
+    <h1>SHIRO MD</h1>
+    <p class="sub"><i class="dot"></i>Kawaii Pairing System</p>
+    <label class="label" for="phoneInput">Your WhatsApp number</label>
+    <div class="field"><div class="pre">+</div><input type="tel" id="phoneInput" placeholder="94XXXXXXXXX (country code + number)" maxlength="20" autocomplete="tel"></div>
+    <button class="btn" id="pairBtn"><span id="bc">Get pairing code ♡</span></button>
+    <div class="result" id="result"></div>
+    <div class="cord"><i class="ring" id="ring"></i></div>
+  </main>
 </div>
 
+<div id="shiro" data-p="stand" data-m="normal">
+  <svg viewBox="0 0 140 178" role="img" aria-label="Shiro the catgirl">
+    <defs>
+      <linearGradient id="hg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#e8d6fb"/></linearGradient>
+      <linearGradient id="eg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6d4fc2"/><stop offset="1" stop-color="#ff8fab"/></linearGradient>
+    </defs>
+    <g class="legT"><rect x="57" y="144" width="11" height="17" rx="5" fill="#ffe6dc"/><rect x="72" y="144" width="11" height="17" rx="5" fill="#ffe6dc"/><ellipse cx="62" cy="163" rx="9" ry="5" fill="#ff8fab"/><ellipse cx="78" cy="163" rx="9" ry="5" fill="#ff8fab"/></g>
+    <g class="legS"><ellipse cx="70" cy="150" rx="36" ry="10" fill="#ffb3cf"/><ellipse cx="55" cy="160" rx="10" ry="9" fill="#ffe6dc"/><ellipse cx="85" cy="160" rx="10" ry="9" fill="#ffe6dc"/><ellipse cx="55" cy="168" rx="10" ry="5" fill="#ff8fab"/><ellipse cx="85" cy="168" rx="10" ry="5" fill="#ff8fab"/></g>
+    <g class="up">
+      <g class="tail" fill="none" stroke-linecap="round"><path d="M88 146Q130 150 124 112" stroke="#dcc6f5" stroke-width="12"/><path d="M88 146Q130 150 124 112" stroke="#fff" stroke-width="8"/></g>
+      <path d="M52 98Q70 104 88 98L98 146Q70 154 42 146Z" fill="#ffb3cf" stroke="#ff8fab" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M57 98Q70 114 83 98Z" fill="#fff"/><circle cx="70" cy="105" r="4" fill="#ff6b9d"/>
+      <g transform="translate(70 130)"><path d="M-11-8H11V6Q11 11 6 11H-6Q-11 11-11 6Z" fill="#ffd6e7" stroke="#ff8fab" stroke-width="1.4" stroke-dasharray="3 2"/><path d="M0 5C-7 0-4-6 0-2C4-6 7 0 0 5Z" fill="#ff8fab"/></g>
+      <g transform="translate(14 0) scale(.93)">
+        <g stroke="#dcc6f5" stroke-width="2" stroke-linejoin="round" fill="url(#hg)">
+          <path class="tailL" d="M30 56Q4 66 10 108Q26 100 34 74Z"/>
+          <path class="tailR" d="M90 56Q116 66 110 108Q94 100 86 74Z"/>
+          <path d="M20 64Q16 14 60 14Q104 14 100 64L98 84Q60 98 22 84Z"/>
+          <g class="earL"><path d="M24 42L20 8L52 26Z"/><path d="M28 35L26 18L41 27Z" fill="#ffc9de" stroke="none"/></g>
+          <g class="earR"><path d="M96 42L100 8L68 26Z"/><path d="M92 35L94 18L79 27Z" fill="#ffc9de" stroke="none"/></g>
+        </g>
+        <ellipse cx="60" cy="68" rx="32" ry="27" fill="#fff3ec" stroke="#f3d9cc" stroke-width="1.5"/>
+        <path d="M27 66Q22 26 60 24Q98 26 93 66Q90 50 82 44Q76 54 66 44Q60 52 54 44Q44 54 38 44Q30 50 27 66Z" fill="url(#hg)" stroke="#dcc6f5" stroke-width="2" stroke-linejoin="round"/>
+        <g class="eN"><ellipse cx="44" cy="71" rx="7.5" ry="9.5" fill="url(#eg)"/><ellipse cx="44" cy="72" rx="3.6" ry="5.2" fill="#3b2a63"/><circle cx="46.6" cy="67" r="2.8" fill="#fff"/><circle cx="41.4" cy="75.5" r="1.3" fill="#fff"/><ellipse cx="76" cy="71" rx="7.5" ry="9.5" fill="url(#eg)"/><ellipse cx="76" cy="72" rx="3.6" ry="5.2" fill="#3b2a63"/><circle cx="78.6" cy="67" r="2.8" fill="#fff"/><circle cx="73.4" cy="75.5" r="1.3" fill="#fff"/><path d="M35.5 65Q44 58 52.5 65M67.5 65Q76 58 84.5 65" fill="none" stroke="#3b2a63" stroke-width="2.2" stroke-linecap="round"/></g>
+        <g class="eH" fill="none" stroke="#3b2a63" stroke-width="2.8" stroke-linecap="round"><path d="M36 74Q44 63 52 74M68 74Q76 63 84 74"/></g>
+        <g class="eA"><path d="M35 58H56V70ZM85 58H64V70Z" fill="#fff3ec"/><path d="M35 58L56 70M85 58L64 70" fill="none" stroke="#3b2a63" stroke-width="2.6" stroke-linecap="round"/></g>
+        <ellipse class="bl" cx="35" cy="84" rx="6" ry="3.4"/><ellipse class="bl" cx="85" cy="84" rx="6" ry="3.4"/>
+        <path class="mN" d="M54.5 84Q57.25 88 60 84Q62.75 88 65.5 84" fill="none" stroke="#b0577a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path class="mH" d="M52 82Q60 96 68 82Z" fill="#d0587c" stroke="#b0577a" stroke-width="1.6" stroke-linejoin="round"/>
+        <path class="mA" d="M53 90Q60 82 67 90" fill="none" stroke="#b0577a" stroke-width="2" stroke-linecap="round"/>
+        <g transform="translate(60 26)"><path d="M0 0L-11-8V8ZM0 0L11-8V8Z" fill="#ff8fab" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><circle r="3.4" fill="#ff6b9d" stroke="#fff" stroke-width="1.2"/></g>
+      </g>
+      <g transform="translate(52 100)"><g class="armL"><path d="M0 0V24" fill="none" stroke="#ffe6dc" stroke-width="9" stroke-linecap="round"/><circle cy="29" r="5.5" fill="#ffe6dc"/><circle r="7" fill="#ffb3cf"/></g></g>
+      <g transform="translate(88 100)"><g class="armR"><path d="M0 0V24" fill="none" stroke="#ffe6dc" stroke-width="9" stroke-linecap="round"/><circle cy="29" r="5.5" fill="#ffe6dc"/><circle r="7" fill="#ffb3cf"/></g></g>
+    </g>
+  </svg>
+  <i class="vein">💢</i>
+  <div class="letter" id="letter">
+    <p class="lh">♡ A letter for you ♡</p>
+    <p class="lp">Your pairing code for <b id="forNum"></b>:</p>
+    <div class="code" id="code"></div>
+    <p class="lp sm">Open WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number, then type this code.</p>
+    <div class="acts"><button class="copy" id="copyBtn">Copy code</button><button class="copy" id="doneBtn">Done ♡</button></div>
+    <p class="sig">– Shiro</p>
+  </div>
+</div>
+<div class="dlg" id="dlg"><b>Shiro</b><span id="msg"></span></div>
+
 <script>
-    // Allow Enter key
-    document.getElementById('phoneInput').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') getPairingCode();
-    });
+const $=i=>document.getElementById(i),RM=matchMedia('(prefers-reduced-motion:reduce)').matches;
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+const rnd=(a,b)=>a+Math.random()*(b-a),pick=a=>a[Math.random()*a.length|0],sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const S=$('shiro'),C=$('card'),L=$('letter'),W=150,H=190,HX=114,HY=83,B='cubic-bezier(.3,1.35,.5,1)';
+let st='intro',busy=false,cur='',tw=0;
 
-    async function getPairingCode() {
-        const input = document.getElementById('phoneInput');
-        const btn = document.getElementById('pairBtn');
-        const btnContent = document.getElementById('btnContent');
-        const resultDiv = document.getElementById('result');
+/* ---- Shiro helpers ---- */
+function say(t){
+  const d=$('msg');$('dlg').classList.add('on');clearInterval(tw);
+  if(RM){d.textContent=t;return}
+  let i=0;d.textContent='';
+  tw=setInterval(()=>{d.textContent=t.slice(0,++i);if(i>=t.length)clearInterval(tw)},26);
+}
+const set=(p,m)=>{if(p)S.dataset.p=p;if(m)S.dataset.m=m};
+const put=(x,y,t,e)=>{const s=S.style;s.setProperty('--t',t+'s');s.setProperty('--e',e||'');s.setProperty('--x',x+'px');s.setProperty('--y',y+'px')};
+async function go(x,y,t,e){S.classList.add('walk');put(x,y,t,e);await sleep(t*1000+60);S.classList.remove('walk')}
+const ground=()=>({x:(innerWidth-W)/2,y:Math.max(10,innerHeight-H-110)});
+const mid=()=>({x:(innerWidth-W)/2,y:Math.max(8,(innerHeight-520)/2)});
+function spot(){
+  const r=C.getBoundingClientRect();
+  return innerWidth>=900?{x:r.left-W-30,y:r.bottom-H+8}:{x:r.right-W-6,y:Math.max(6,r.top-H+16)};
+}
 
-        const number = input.value.trim().replace(/[^0-9]/g, '');
+/* ---- intro: welcome, pull the panel down, sit at the side ---- */
+async function intro(){
+  C.style.transition='none';C.style.setProperty('--up','0px');
+  const up=C.getBoundingClientRect().bottom+8;
+  C.style.setProperty('--up',-up+'px');C.offsetWidth;C.style.transition='';
+  const g=ground();put(g.x,g.y,0);S.classList.add('in');set('wave','happy');
+  say('Welcome to SHIRO MD! ♡');await sleep(2300);
+  set('stand','happy');say('Wait a moment, I will pull your pairing panel down for you!');await sleep(2400);
+  const q=$('ring').getBoundingClientRect(),x=q.left+q.width/2-HX,y=q.top+q.height/2-HY;
+  set('up');await go(x,y,.6,'cubic-bezier(.2,.8,.3,1)');
+  put(x,y+up,1.2,B);C.style.setProperty('--up','0px');
+  await sleep(1300);
+  document.body.classList.add('dn');set('stand');say('Ta-da! Your pairing panel is ready ♡');
+  await sleep(1000);
+  const s=spot();await go(s.x,s.y,1.2);set('sit');
+  say('Enter your WhatsApp number and I will fetch your pairing code ♡');st='idle';
+}
+function final(){
+  C.style.setProperty('--up','0px');document.body.classList.add('dn');S.classList.add('in');
+  const s=spot();put(s.x,s.y,0);set('sit','normal');
+  say('Enter your WhatsApp number and I will fetch your pairing code ♡');st='idle';
+}
 
-        if (!number || number.length < 7) {
-            showError('ℹ️ Valid phone number ekak denna.', resultDiv);
-            return;
-        }
+/* ---- effects ---- */
+function burst(){
+  if(RM)return;
+  const r=S.getBoundingClientRect(),cx=r.left+W/2,cy=r.top+H*.6;
+  for(let i=0;i<26;i++){
+    const p=el('i','bp',pick(['🌸','💗','✨','🎀','⭐'])),a=rnd(0,6.283),d=rnd(90,250);
+    p.style.left=cx+'px';p.style.top=cy+'px';document.body.append(p);
+    p.animate([
+      {transform:'translate(-50%,-50%) scale(.3)',opacity:1},
+      {transform:`translate(calc(-50% + ${Math.cos(a)*d}px),calc(-50% + ${Math.sin(a)*d+70}px)) rotate(${rnd(0,360)}deg) scale(1.1)`,opacity:0}
+    ],{duration:rnd(1100,1800),easing:'cubic-bezier(.2,.8,.3,1)'}).onfinish=()=>p.remove();
+  }
+}
+function copy(b){
+  const ok=()=>{b.textContent='Copied ✓';b.classList.add('ok');setTimeout(()=>{b.textContent='Copy code';b.classList.remove('ok')},2000)};
+  const fb=()=>{const t=document.createElement('textarea');t.value=cur;document.body.append(t);t.select();try{document.execCommand('copy');ok()}catch(e){}t.remove()};
+  navigator.clipboard?navigator.clipboard.writeText(cur).then(ok,fb):fb();
+}
 
-        // Loading state
-        btn.disabled = true;
-        btnContent.innerHTML = '<div class="spinner"></div><span>CONNECTING...</span>';
-        resultDiv.className = 'result';
+/* ---- pairing ---- */
+function mad(msg){
+  const r=$('result'),e=el('div','err',msg);e.setAttribute('role','alert');
+  r.replaceChildren(e);r.className='result show';
+  set('angry','angry');say('Hmph! That is not right! Enter your number properly!');
+  setTimeout(()=>{if(st==='idle'&&S.dataset.m==='angry')set('sit','normal')},4500);
+}
+async function giveLetter(code,num){
+  st='letter';cur=code;$('result').className='result';
+  set('stand','happy');say('It worked! Wait here, I have something for you ♡');
+  const m=mid();await go(m.x,m.y,1.2);
+  const c=$('code');c.replaceChildren();
+  [...code].forEach((k,i)=>{const s=el('span','ch',k);s.style.animationDelay=.4+i*.07+'s';c.append(s)});
+  $('forNum').textContent='+'+num;
+  set('hold','happy');L.classList.add('open');document.body.classList.add('lt');burst();
+  say('Here you go! Your pairing code is inside this letter ♡');
+}
+async function closeLetter(){
+  L.classList.remove('open');document.body.classList.remove('lt');
+  set('stand','happy');say('Need another code? Just enter a new number ♡');
+  await sleep(700);const s=spot();await go(s.x,s.y,1.2);set('sit','normal');st='idle';
+}
+async function pair(){
+  if(busy||st!=='idle')return;
+  const num=$('phoneInput').value.replace(/\D/g,'');
+  if(num.length<7)return mad('Please enter a valid phone number (country code + number).');
+  busy=true;$('pairBtn').disabled=true;
+  $('bc').innerHTML='<i class="dots"><b></b><b></b><b></b></i> Connecting...';
+  $('result').className='result';set('sit','normal');say('Hold on, I am checking with the server...');
+  try{
+    const d=await(await fetch('/pair?number='+encodeURIComponent(num))).json();
+    if(d.code)await giveLetter(String(d.code),num);
+    else mad(d.error?'❌ '+d.error:'❌ Unexpected response. The bot may already be registered.');
+  }catch(e){mad("❌ Couldn't reach the server. Please try again.")}
+  busy=false;$('pairBtn').disabled=false;$('bc').textContent='Get pairing code ♡';
+}
+$('pairBtn').onclick=pair;
+$('phoneInput').addEventListener('keydown',e=>{if(e.key==='Enter')pair()});
+$('phoneInput').addEventListener('focus',()=>{if(st==='idle'&&!busy&&S.dataset.m==='normal')say('Type your number with the country code, like 94XXXXXXXXX ♡')});
+$('copyBtn').onclick=()=>copy($('copyBtn'));
+$('doneBtn').onclick=closeLetter;
+addEventListener('resize',()=>{if(st==='idle'&&!busy){const s=spot();put(s.x,s.y,0)}});
 
-        try {
-            const response = await fetch(`/pair?number=${encodeURIComponent(number)}`);
-            const data = await response.json();
+/* ---- background decor ---- */
+if(!RM){
+  for(let i=0;i<14;i++){const p=el('i','petal',pick(['🌸','🌸','✿','💗','🌷','🎀'])),s=p.style;
+    s.left=rnd(0,100)+'%';s.fontSize=rnd(14,28)+'px';s.animationDuration=rnd(9,19)+'s';s.animationDelay=-rnd(0,19)+'s';s.setProperty('--dx',rnd(-60,60)+'px');document.body.append(p)}
+  for(let i=0;i<18;i++){const t=el('i','star',pick(['✦','✧','✦'])),s=t.style;
+    s.left=rnd(0,100)+'%';s.top=rnd(0,100)+'%';s.fontSize=rnd(8,18)+'px';s.color=pick(['#ff8fab','#d8b4fe','#7dd3fc','#ffc9de']);s.animationDuration=rnd(2,5)+'s';s.animationDelay=-rnd(0,5)+'s';document.body.append(t)}
+}
 
-            if (data.code) {
-                showCode(data.code, resultDiv, number);
-            } else if (data.error) {
-                showError('❌ ' + data.error, resultDiv);
-            } else {
-                showError('❌ Unexpected response. Bot is likely already registered.', resultDiv);
-            }
-        } catch (err) {
-            showError('❌ Server connection failed. Please try again.', resultDiv);
-        }
-
-        // Restore button
-        btn.disabled = false;
-        btnContent.innerHTML = '<span>GET PAIRING CODE</span>';
-    }
-
-    function showCode(code, container, number) {
-        container.innerHTML = `
-            <div class="code-box">
-                <div class="code-label">// pairing code</div>
-                <div class="code-value" id="codeDisplay">${code}</div>
-                <button class="copy-btn" id="copyBtn" onclick="copyCode('${code}')">COPY CODE</button>
-            </div>
-            <div class="instructions">
-                <p>
-                    WhatsApp dala <span>Settings → Linked Devices → Link a Device</span>
-                    → <span>Link with phone number</span> kiyala select karanna.<br><br>
-                    Meeka entry karanna: <span>${number}</span>
-                </p>
-            </div>
-        `;
-        container.className = 'result show';
-    }
-
-    function showError(msg, container) {
-        container.innerHTML = `<div class="error-box">${msg}</div>`;
-        container.className = 'result show';
-    }
-
-    function copyCode(code) {
-        navigator.clipboard.writeText(code).then(() => {
-            const btn = document.getElementById('copyBtn');
-            btn.textContent = 'COPIED ✓';
-            btn.classList.add('copied');
-            setTimeout(() => {
-                btn.textContent = 'COPY CODE';
-                btn.classList.remove('copied');
-            }, 2000);
-        });
-    }
+Promise.race([document.fonts?document.fonts.ready:0,sleep(1500)]).then(()=>RM?final():intro().catch(final));
 </script>
 </body>
-    </html>
+</html>
