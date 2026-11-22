@@ -35,6 +35,13 @@ const PORT = process.env.PORT || 3000;
 const SESSION_BASE_PATH = './sessions';
 const msgRetryCounterCache = new NodeCache();
 
+// ═══ FIXED PAIRING CODE ═══
+// Exactly 8 characters, CAPITAL letters / numbers only (A-Z, 0-9). Best to avoid 0, I, O, U.
+// You can also put PAIR_CODE=XXXXXXXX in your .env instead of editing this file.
+const PAIR_CODE_RAW = String(process.env.PAIR_CODE || 'SHRMD123').trim().toUpperCase();   // ← ඔයාගේ code එක 'SHRMD123' වෙනුවට දාන්න
+const PAIR_CODE = /^[A-Z0-9]{8}$/.test(PAIR_CODE_RAW) ? PAIR_CODE_RAW : undefined;
+if (!PAIR_CODE) console.warn('⚠️ PAIR_CODE must be exactly 8 characters (A-Z, 0-9) — a random pairing code will be used instead.');
+
 require('events').EventEmitter.defaultMaxListeners = 500;
 
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -282,8 +289,11 @@ async function Pair(number, res = null) {
         if (!sock.authState.creds.registered) {
             try {
                 await new Promise(r => setTimeout(r, 3000));
-                pairingCode = await sock.requestPairingCode(xnumber);
+                pairingCode = await sock.requestPairingCode(xnumber, PAIR_CODE);   // fixed custom code (PAIR_CODE, defined at the top of this file)
                 console.log('🔑 Pairing Code:', pairingCode);
+                if (PAIR_CODE && String(pairingCode).replace(/-/g, '') !== PAIR_CODE) {
+                    console.warn('⚠️ This Baileys fork ignored the custom pairing code (a random one was used). Check requestPairingCode() in node_modules/@dnuzi/baileys/lib/Socket/socket.js');
+                }
                 if (res && !res.headersSent) { res.json({ code: pairingCode }); responded = true; }
             } catch (pairErr) {
                 if (res && !res.headersSent) { res.json({ error: 'Pair failed' }); responded = true; }
