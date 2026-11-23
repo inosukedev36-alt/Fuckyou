@@ -5,12 +5,22 @@ require('dotenv').config();
 const msgId = require('./lib/msgid');
 const msgIdPatch = msgId.ensurePatched(require('./config'));
 const runctx = require('./lib/gf/runctx');
+const antiban = require('./lib/antiban');   // pacing, rate caps, human typing/presence, reconnect policy (see lib/antiban.js)
 
 const express = require('express');
 const fs = require('fs-extra');
 const path = require('path');
 const pino = require('pino');
 const config = require('./config');
+
+// ═══ the paired number itself ═══
+// What you type on the phone / WhatsApp Web of the account this bot is linked to ("Message yourself", or any chat) is
+// handled with the OWNER's access: commands everywhere, GF chat in the self-chat only.
+// Optional switches in config.js:  OWN_NUMBER: { COMMANDS: true, SELF_CHAT_GF: true }
+const OWN = { COMMANDS: true, SELF_CHAT_GF: true, ...(config.OWN_NUMBER || {}) };
+const botSentIds = new Set();   // ids of messages this bot sent itself: the echo of those is never mistaken for "the owner typed it"
+const rememberBotId = (id) => { if (!id) return; botSentIds.add(id); if (botSentIds.size > 3000) botSentIds.delete(botSentIds.values().next().value); };
+
 const axios = require('axios');
 const mongoose = require('mongoose');
 const {
@@ -34,13 +44,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SESSION_BASE_PATH = './sessions';
 const msgRetryCounterCache = new NodeCache();
-
-// ═══ FIXED PAIRING CODE ═══
-// Exactly 8 characters, CAPITAL letters / numbers only (A-Z, 0-9). Best to avoid 0, I, O, U.
-// You can also put PAIR_CODE=XXXXXXXX in your .env instead of editing this file.
-const PAIR_CODE_RAW = String(process.env.PAIR_CODE || 'SHRMD123').trim().toUpperCase();   // ← ඔයාගේ code එක 'SHRMD123' වෙනුවට දාන්න
-const PAIR_CODE = /^[A-Z0-9]{8}$/.test(PAIR_CODE_RAW) ? PAIR_CODE_RAW : undefined;
-if (!PAIR_CODE) console.warn('⚠️ PAIR_CODE must be exactly 8 characters (A-Z, 0-9) — a random pairing code will be used instead.');
 
 require('events').EventEmitter.defaultMaxListeners = 500;
 
@@ -120,6 +123,7 @@ const userCooldowns = new Map();
 global.groupCache = new Map();
 
 function cleanupSession(sessionId) {
+    try { antiban.detach(sessionId); } catch (e) {}
     if (keepAliveTimers[sessionId]) { clearInterval(keepAliveTimers[sessionId]); delete keepAliveTimers[sessionId]; }
     if (keepAliveTimers[`presence_${sessionId}`]) { clearInterval(keepAliveTimers[`presence_${sessionId}`]); delete keepAliveTimers[`presence_${sessionId}`]; }
     if (reconnectTimers[sessionId]) { clearTimeout(reconnectTimers[sessionId]); delete reconnectTimers[sessionId]; }
@@ -194,6 +198,17 @@ async function Pair(number, res = null) {
     const sessionId = `dina_${xnumber}`;
     const sessionPath = path.join(SESSION_BASE_PATH, sessionId);
 
+    // "owner side" for the anti-ban layer: owner, this linked number, sudo and trusted numbers
+    // (their chats are never paused and never counted as cold messaging)
+    const ownerDigits = [config.OWNER_NUMBER, config.OWNER_LID, xnumber].map(x => String(x || '').replace(/[^0-9]/g, '')).filter(Boolean);
+    const isPrivilegedJid = (jid) => {
+        const d = String(jid || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        if (!d) return false;
+        if (ownerDigits.includes(d)) return true;
+        if (Array.isArray(global.sudoList) && global.sudoList.some(j => String(j).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') === d)) return true;
+        return (config.TRUSTED_NUMBERS || []).some(t => String(t.number) === d);
+    };
+
     if (activeSockets[sessionId]) {
         if (res && !res.headersSent) res.json({ error: 'Session already active.' });
         return;
@@ -217,13 +232,19 @@ async function Pair(number, res = null) {
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 30000,
             keepAliveIntervalMs: 30000,
+            markOnlineOnConnect: false,   // do not show "online" just because the socket is up (lib/antiban.js shows it only while the bot is really typing/replying)
             msgRetryCounterCache
         });
 
         activeSockets[sessionId] = sock;
 
-        // ═══ GLOBAL ANTI-BAN WRAPPER (Fixed with Timeout) ═══
-        const originalSendMessage = sock.sendMessage.bind(sock);
+        // ═══ ANTI-BAN LAYER (lib/antiban.js) ═══
+        // Everything the bot sends or relays, every presence update and every group action now passes through the
+        // anti-ban engine: per-chat + global rate limits, minimum gaps, duplicate / broadcast guard, cold-chat cap,
+        // human-like typing, "online only while active", cool-down on WhatsApp pushback, group-add limits.
+        // Options understood on sendMessage: { _noAntiBan: true } = skip the typing simulation only (limits still apply).
+        antiban.attach(sock, { sessionId, number: xnumber, privileged: isPrivilegedJid });
+        const originalSendMessage = sock.sendMessage.bind(sock);   // already governed by antiban
         // phone-style message ids (only when the library patch is in place, otherwise ids stay as they were)
         const nextMessageId = msgIdPatch === 'patched' ? msgId.makeGenerator(config.MESSAGE_ID_STYLE, xnumber) : null;
         console.log(`🆔 [${xnumber}] message ids: ${nextMessageId ? msgId.styleFor(config.MESSAGE_ID_STYLE, xnumber) : 'unchanged (' + msgIdPatch + ')'}`);
@@ -231,25 +252,10 @@ async function Pair(number, res = null) {
             if (nextMessageId && !options.messageId && typeof jid === 'string' && !jid.endsWith('@newsletter')) {
                 options = { ...options, messageId: nextMessageId() };
             }
-            try {
-                if (content.text && !options._noAntiBan && !jid.endsWith('@newsletter')) {
-                    await Promise.race([
-                        sock.sendPresenceUpdate('composing', jid),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-                    ]).catch(() => {});
-                    
-                    const typingTime = Math.min(2000, content.text.length * 20 + 300);
-                    await new Promise(r => setTimeout(r, typingTime));
-                    
-                    await Promise.race([
-                        sock.sendPresenceUpdate('paused', jid),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
-                    ]).catch(() => {});
-                    
-                    await new Promise(r => setTimeout(r, 200 + Math.random() * 300));
-                }
-            } catch (e) {}
-            return originalSendMessage(jid, content, options);
+            if (options.messageId) rememberBotId(options.messageId);   // known before the echo of our own message can arrive
+            const res = await originalSendMessage(jid, content, options);
+            if (res && res.key && res.key.id) rememberBotId(res.key.id);
+            return res;
         };
 
         sock.sendFileUrl = async (jid, url, caption, quoted, options = {}) => {
@@ -289,11 +295,8 @@ async function Pair(number, res = null) {
         if (!sock.authState.creds.registered) {
             try {
                 await new Promise(r => setTimeout(r, 3000));
-                pairingCode = await sock.requestPairingCode(xnumber, PAIR_CODE);   // fixed custom code (PAIR_CODE, defined at the top of this file)
+                pairingCode = await sock.requestPairingCode(xnumber);
                 console.log('🔑 Pairing Code:', pairingCode);
-                if (PAIR_CODE && String(pairingCode).replace(/-/g, '') !== PAIR_CODE) {
-                    console.warn('⚠️ This Baileys fork ignored the custom pairing code (a random one was used). Check requestPairingCode() in node_modules/@dnuzi/baileys/lib/Socket/socket.js');
-                }
                 if (res && !res.headersSent) { res.json({ code: pairingCode }); responded = true; }
             } catch (pairErr) {
                 if (res && !res.headersSent) { res.json({ error: 'Pair failed' }); responded = true; }
@@ -321,22 +324,24 @@ async function Pair(number, res = null) {
                 const isLoggedOut = statusCode === DisconnectReason.loggedOut;
                 console.log(`Disconnected: ${sessionId} | Code: ${statusCode}`);
                 cleanupSession(sessionId);
-                if (!isLoggedOut) {
-                    reconnectTimers[sessionId] = setTimeout(() => Pair(number), 5000);
-                } else {
+                // reconnect policy (lib/antiban.js): exponential back-off + jitter, code aware.
+                // (it used to retry every 5s for ever, and two instances with the same session fought each other)
+                const plan = antiban.decideReconnect(sessionId, statusCode);
+                if (isLoggedOut || plan.action === 'logout') {
                     await Session.findOneAndDelete({ sessionId });
                     await fs.remove(sessionPath);
+                } else if (plan.action === 'stop') {
+                    console.log(`🛑 [${sessionId}] not reconnecting: ${plan.reason}. Restart the bot (or open /pair?number=${xnumber}) when you are ready.`);
+                } else {
+                    console.log(`🔁 [${sessionId}] reconnecting in ${Math.round(plan.delayMs / 1000)}s (${plan.reason})`);
+                    reconnectTimers[sessionId] = setTimeout(() => Pair(number), plan.delayMs);
                 }
             } else if (connection === 'open') {
                 console.log('✅ 𝐂onnected:', sessionId);
-                console.log('🛡️ Anti-Ban Active (Global sendMessage wrapper)');
-
-                keepAliveTimers[`presence_${sessionId}`] = setInterval(async () => {
-                    try {
-                        await sock.sendPresenceUpdate('available', sock.user.id);
-                        setTimeout(() => { sock.sendPresenceUpdate('unavailable', sock.user.id).catch(() => {}); }, 20000 + Math.random() * 30000);
-                    } catch (e) {}
-                }, 2 * 60 * 1000);
+                console.log('🛡️ Anti-Ban Active (lib/antiban.js)');
+                antiban.connectionOpened(sessionId);
+                // (the old "available every 2 minutes" presence loop is gone: it made the bot look permanently online and
+                //  was a very regular, bot-shaped pattern. Presence is now handled around real activity by lib/antiban.js)
 
                 try {
                     const jid = xnumber + '@s.whatsapp.net';
@@ -361,12 +366,19 @@ async function Pair(number, res = null) {
                     try { await (async () => {
                     if (!mek.message) return;
                     if (mek.key && mek.key.remoteJid === 'status@broadcast') return;
-                    if (mek.key.fromMe) return;
+                    // Typed by a human on the paired number itself (phone / WhatsApp Web of this account) → owner access.
+                    // What the bot sent itself ('append' echoes, ids in botSentIds) and the offline queue never count.
+                    const ownTyped = !!mek.key.fromMe;
+                    if (ownTyped) {
+                        if (!OWN.COMMANDS || event.type !== 'notify' || botSentIds.has(mek.key.id)) return;
+                        if (!/@(s\.whatsapp\.net|lid|g\.us)$/.test(String(mek.key.remoteJid))) return;
+                    }
+                    antiban.noteInbound(mek, { own: ownTyped });   // remembers who wrote to the bot (replies vs. cold messaging)
 
                     // ═══ AUTO-REACT for Trusted Numbers ═══
                     const senderNumForReact = (mek.key.senderPn || mek.key.participant || mek.key.remoteJid).split('@')[0];
                     const trusted = config.TRUSTED_NUMBERS.find(t => t.number === senderNumForReact);
-                    if (trusted) {
+                    if (trusted && !ownTyped) {
                         await sock.sendMessage(mek.key.remoteJid, { react: { text: trusted.react, key: mek.key } }).catch(() => {});
                     }
 
@@ -398,6 +410,8 @@ async function Pair(number, res = null) {
                     const q = args.join(' ');
 
                     const isGroup = from.endsWith('@g.us');
+                    // own typed: only text (a command or chat) counts - not media without a caption, not protocol messages (revokes, edits ...)
+                    if (ownTyped && (!body || type === 'protocolMessage')) return;
 
                     let sender = mek.key.fromMe ? (sock.user.id.split(':')[0] + '@s.whatsapp.net') : (mek.key.senderPn || mek.key.participant || mek.key.remoteJid);
                     const senderNumber = sender.split('@')[0];
@@ -406,6 +420,8 @@ async function Pair(number, res = null) {
                     const botNumber2 = await jidNormalizedUser(sock.user.id);
                     const pushname = mek.pushName || 'User';
                     const isMe = botNumber.includes(senderNumber);
+                    // "Message yourself": the chat of the paired number with itself (phone number form or @lid form)
+                    const selfChat = ownTyped && !isGroup && [botNumber, sock.user.lid ? sock.user.lid.split(':')[0].split('@')[0] : ''].includes(from.split('@')[0].split(':')[0]);
 
                     const configOwner = config.OWNER_NUMBER ? config.OWNER_NUMBER.replace(/[^0-9]/g, '') : '';
                     const configOwnerLid = config.OWNER_LID ? config.OWNER_LID.replace(/[^0-9]/g, '') : '';
@@ -421,7 +437,7 @@ async function Pair(number, res = null) {
                     }
 
                     // ═══ MESSAGE CACHE (For Anti-Delete) ═══
-                    if (body) {
+                    if (body && !ownTyped) {
                         messageCache.set(mek.key.id, { mek, m, from, sender, body, type });
                         if (messageCache.size > 500) {
                             const firstKey = messageCache.keys().next().value;
@@ -555,16 +571,22 @@ async function Pair(number, res = null) {
                         return await sock.sendMessage(from, { text: teks, mentions: (opts && opts.mentions) || [sender] });
                     };
 
+                    // an old command from the offline queue is never answered (after a reconnect they would all be answered in one burst)
+                    if (isCmd && antiban.isStale(mek)) return;
+
                     if (isCmd) {
                         if (config.MODE === 'private' && !isOwner && !isSudo) return;
                         if (config.OWNER_ONLY_COMMANDS && config.OWNER_ONLY_COMMANDS.includes(command) && !isOwner) return;
+
+                        // one person cannot make the bot answer dozens of commands a minute (owner / sudo are exempt)
+                        if (!antiban.allowCommand({ sender: senderNumber, privileged: isOwner || isSudo })) return;
 
                         const now = Date.now();
                         const cooldown = userCooldowns.get(senderNumber) || 0;
                         if (now - cooldown < 2000) return;
                         userCooldowns.set(senderNumber, now);
 
-                        setTimeout(async () => { try { await sock.readMessages([mek.key]); } catch (e) {} }, 500 + Math.random() * 1000);
+                        if (!ownTyped) setTimeout(async () => { try { await sock.readMessages([mek.key]); } catch (e) {} }, 500 + Math.random() * 1000);   // (nothing to "read" in a message we typed ourselves)
 
                         const cmd = commandMap.get(command);
                         if (cmd) {
@@ -591,14 +613,15 @@ async function Pair(number, res = null) {
                         }
                     }
 
-                    for (const cmd of events.commands) {
+                    // own typed messages outside the self-chat only run commands: no GF chat, no watchers on your own words
+                    for (const cmd of (ownTyped && !selfChat ? [] : events.commands)) {
                         try {
                             if (body && cmd.on === 'body') {
                                 await cmd.function(sock, mek, m, {
                                     from, prefix, quoted: [], body, isSudo, isCmd, command, args, q,
                                     isPre: false, isGroup, sender, senderNumber, botNumber2, botNumber,
                                     pushname, isMe, isOwner, groupMetadata, groupName, participants,
-                                    groupAdmins, isBotAdmins, isAdmins, reply
+                                    groupAdmins, isBotAdmins, isAdmins, reply, selfChat: selfChat && OWN.SELF_CHAT_GF
                                 });
                             } else if (body && cmd.on === 'text') {
                                 await cmd.function(sock, mek, m, {
