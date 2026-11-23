@@ -15,7 +15,7 @@
 const { cmd } = require('../command');
 
 const API_URL     = 'https://apix.wolvarex.com/api/ai/wormgpt';
-const API_KEY     = process.env.WORM_API_KEY || 'YOUR_API_KEY_HERE'; // never commit the real key
+const API_KEY     = process.env.WORM_API_KEY || 'wxa_f_00f9396caa'; // never commit the real key
 const GT_URL      = 'https://translate.googleapis.com/translate_a/single'; // free, unofficial
 const COOLDOWN_MS = 5000;  // per-user anti-spam
 const MAX_INPUT   = 600;   // both services are GET requests, so keep the URL short
