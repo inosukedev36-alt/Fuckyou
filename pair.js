@@ -21,6 +21,21 @@ const OWN = { COMMANDS: true, SELF_CHAT_GF: true, ...(config.OWN_NUMBER || {}) }
 const botSentIds = new Set();   // ids of messages this bot sent itself: the echo of those is never mistaken for "the owner typed it"
 const rememberBotId = (id) => { if (!id) return; botSentIds.add(id); if (botSentIds.size > 3000) botSentIds.delete(botSentIds.values().next().value); };
 
+// ═══ custom pairing code ═══
+// The code WhatsApp asks for when linking a number is normally random. With PAIR_CODE it is the same every time:
+// exactly 8 letters / digits, e.g. 'SHIROMD1'. Set it in config.js (PAIR_CODE: 'SHIROMD1') or in .env (PAIR_CODE=SHIROMD1).
+// PAIR_CODE: '' = a random WhatsApp code like before. (Needs a Baileys version that accepts a custom code - see Pair().)
+function wantedPairCode() {
+    const src = config.PAIR_CODE !== undefined ? config.PAIR_CODE : (process.env.PAIR_CODE !== undefined ? process.env.PAIR_CODE : 'SHIROMD1');
+    const code = String(src || '').replace(/[\s-]/g, '').toUpperCase();   // the phone shows capital letters, so the code is always capital
+    if (!code) return null;
+    if (!/^[A-Z0-9]{8}$/.test(code)) {
+        console.log(`⚠️ PAIR_CODE "${code}" cannot be used (it must be exactly 8 letters or digits) - a random pairing code is used instead`);
+        return null;
+    }
+    return code;
+}
+
 const axios = require('axios');
 const mongoose = require('mongoose');
 const {
@@ -295,7 +310,19 @@ async function Pair(number, res = null) {
         if (!sock.authState.creds.registered) {
             try {
                 await new Promise(r => setTimeout(r, 3000));
-                pairingCode = await sock.requestPairingCode(xnumber);
+                const wanted = wantedPairCode();
+                let fellBack = false;
+                try {
+                    pairingCode = wanted ? await sock.requestPairingCode(xnumber, wanted) : await sock.requestPairingCode(xnumber);
+                } catch (codeErr) {
+                    if (!wanted) throw codeErr;
+                    fellBack = true;
+                    console.log(`⚠️ the custom pairing code was refused (${codeErr && codeErr.message}) - asking WhatsApp for a random one instead`);
+                    pairingCode = await sock.requestPairingCode(xnumber);
+                }
+                if (wanted && !fellBack && String(pairingCode).replace(/[\s-]/g, '').toUpperCase() !== wanted) {
+                    console.log(`⚠️ this Baileys version ignored the custom code ${wanted} and made its own: ${pairingCode} - type that one on the phone (or update @dnuzi/baileys)`);
+                }
                 console.log('🔑 Pairing Code:', pairingCode);
                 if (res && !res.headersSent) { res.json({ code: pairingCode }); responded = true; }
             } catch (pairErr) {
