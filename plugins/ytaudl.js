@@ -82,8 +82,8 @@ const MENU_FOOTER  = 'YouTube Downloader';
 
 // ─────────────── .ytfd card (the post style of your channel) ───────────────
 // picture + title / views / duration / release date + a text music-player bar + react line + channel name
-const CARD_CHANNEL_NAME = 'සින්දු පන්තිය || 🎧🇱🇰';       // the last line of the card — write your own channel name ('' = no line)
-const CARD_REACT_LINE   = '• ලස්සන රියැක්ට් ඔනී ...💗😽🍃'; // the "react please" line ('' = no line)
+const CARD_CHANNEL_NAME = '';       // the last line of the card — write your own channel name ('' = no line)
+const CARD_REACT_LINE   = '• 🅡ᴇᴀᴄᴛꜱ 🅟ʟᴇᴀꜱᴇ ...💗😽🍃'; // the "react please" line ('' = no line)
 const THUMB_BASE        = 'https://i.ytimg.com';             // where the card picture (the video thumbnail) comes from
 
 // ─────────────── anti-ban timings ───────────────
