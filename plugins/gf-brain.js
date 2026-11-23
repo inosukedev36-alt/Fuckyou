@@ -413,7 +413,7 @@ async function onBody(conn, mek, m, ctx) {
     try {
         if (!gfc().ENABLED) return;
         const text = String(ctx.body || '').trim();
-        if (!text || ctx.isCmd || mek.key.fromMe) return;
+        if (!text || ctx.isCmd || (mek.key.fromMe && !ctx.selfChat)) return;   // her own words never; what he types in "Message yourself" (ctx.selfChat) yes
         if (config.MODE === 'private' && !ctx.isOwner && !ctx.isSudo) return;
         const phone = ctx.senderNumber;
         if (!phone || !fresh(mek)) return;
