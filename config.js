@@ -73,6 +73,31 @@ module.exports = {
         'eval', 'ev', 'restart', 'update', 
         'kick', 'add', 'promote', 'demote'
     ],
+
+    // ═══ 🛡️ ANTI-BAN (lib/antiban.js) ═══
+    // Every key is optional — lib/antiban.js has a default for all of them. Only what you want to change needs to stay here.
+    ANTIBAN: {
+        ENABLED: true,
+        // 'YYYY-MM-DD' = the day this number was first linked. For its first ~3 weeks the limits are scaled down
+        // (25% → 40% → 60% → 80% → 100%). Leave '' for a number that has been running for a long time.
+        WARMUP: { LINKED_AT: '' },
+        SEND: {
+            PER_CHAT_PER_MIN: 30,      // messages per minute to ONE chat (after a burst of 8)
+            GLOBAL_PER_MIN: 45,        // …to everybody together (after a burst of 15)
+            GLOBAL_PER_HOUR: 900,
+            GLOBAL_PER_DAY: 7000,
+            MAX_WAIT_MS: 90000,        // a message that would have to wait longer than this is refused, not held
+        },
+        COLD: { PER_HOUR: 15, PER_DAY: 60 },   // NEW 1:1 chats the bot starts itself (people who never wrote first)
+        // The same text again and again is what spam looks like. (/boom and the like run into this on purpose.)
+        DUPLICATE: { ENABLED: true, PER_CHAT_MAX: 3, PER_CHAT_WINDOW_SEC: 60, ACROSS_CHATS_MAX: 8, ACROSS_WINDOW_SEC: 600 },
+        TYPING: { ENABLED: true, MAX_MS: 3500 },
+        PRESENCE: { ENABLED: true, IDLE_OFFLINE_SEC: [25, 75] },   // online only while active, offline after this idle time
+        INBOUND: { STALE_SEC: 180, PER_USER_MAX: 8, PER_USER_WINDOW_SEC: 60, PENALTY_SEC: 120 },   // STALE_SEC: 0 = answer old queued commands too
+        GROUP_ACTIONS: { ADD_PER_HOUR: 10 },
+        RECONNECT: { ON_REPLACED: 'stop', ON_FORBIDDEN: 'stop' },   // 'stop' = do not fight / hammer · 'retry' = keep trying
+    },
+
        ANIME_NEWS: {
     ENABLED: true, INTERVAL_MINUTES: 5, TARGET_JIDS: ['120363427540945497@newsletter,120363431069029289@newsletter'],
     VIEW_CHANNEL_JID: '120363427540945497@newsletter',   // button එක යන channel එක
