@@ -14,7 +14,7 @@ module.exports = {
     OWNER_NUMBER: '94760036688', 
     OWNER_LID: '6271289786544',
     OWNER_WEBSITE: 'https://inosuke.hashibira.workers.dev/',
-    OWNER_GITHUB: 'https://github.com/yyahampath09-afk',
+    OWNER_GITHUB: '',
     OWNER_CHANNEL: 'https://whatsapp.com/channel/120363432680694902',
 
     MENU_IMAGE_URL: 'https://img3.pixhost.to/images/6927/798851472_img-20261101-wa0232.jpg',
@@ -99,10 +99,10 @@ module.exports = {
     },
 
        ANIME_NEWS: {
-    ENABLED: true, INTERVAL_MINUTES: 5, TARGET_JIDS: ['120363427540945497@newsletter,120363431069029289@newsletter'],
-    VIEW_CHANNEL_JID: '120363427540945497@newsletter',   // button එක යන channel එක
-    VIEW_CHANNEL_NAME: 'මගෙන් මුකුත් අහගන්න එපා',
-     VIEW_CHANNEL_LINK: 'https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R',  // JID නැත්නම් link එකෙන් auto හොයාගන්නවා
-    SUMMARY_LANG: 'Sinhala',                                  // summary සිංහලෙන් ඕන නම්
+    ENABLED: true, INTERVAL_MINUTES: 5, TARGET_JIDS: ['120363431533516657@newsletter'],
+    VIEW_CHANNEL_JID: '120363431533516657@newsletter',   // button එක යන channel එක
+    VIEW_CHANNEL_NAME: ' 𝓐𝓷𝓲𝓶𝓮 𝓝𝓮𝔀𝓼 𝓑𝔂 𝓘𝓷𝓸𝓼𝓾𝓴𝓮',
+     VIEW_CHANNEL_LINK: 'https://whatsapp.com/channel/0029Vb9co3HFi8xjeHvhRI2m',  // JID නැත්නම් link එකෙන් auto හොයාගන්නවා
+    SUMMARY_LANG: 'english',                                  // summary සිංහලෙන් ඕන නම්
        }
     }
