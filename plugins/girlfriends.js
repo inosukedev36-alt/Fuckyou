@@ -1,5 +1,6 @@
 // plugins/girlfriends.js
-// API: https://ai.dnuz.top/api/gemini?q=...
+// AI: Gemini through the account cookies (lib/gemini.js → a real conversation per person = her memory).
+//     Only if that fails: https://ai.dnuz.top/api/gemini?q=...  (sendHttpsRequest below). The switch between the two lives in lib/gf/ai.js
 // 21 anime girlfriends (every dere type) — real-girlfriend edition (Sinhala) ✅
 // v2: INTENSE layer — each archetype (alias) played at maximum intensity (v4: now part of each girl's block)
 // v3: user ගේ භාෂාවට reply (සිංහල → සිංහල | English → English | Singlish → සිංහල)
@@ -11,9 +12,7 @@
 const https = require("https");
 const { parseMarker } = require('../lib/gf/tools');
 const { toneOf, casualPool } = require('../lib/gf/lines');
-// Gemini WEB (cookies) backend: one conversation per girl+user. Any failure → the old ai.dnuz.top endpoint below.
-let webchat = null;
-try { webchat = require('../lib/gf/webchat'); } catch (e) { console.error('⚠️ gf webchat disabled:', e.message); }
+const AI = require('../lib/gf/ai');
 // NOTE: since the AI-girlfriend rewrite this file is the CHAT ENGINE only (personas, prompt, AI call,
 // human-like typing). Commands, memory, onboarding and tool-running live in plugins/gf-brain.js.
 
@@ -30,6 +29,10 @@ const CFG = {
     RATE_LIMIT_MS:      5_000,       // API limit (අඩුවෙන් ගියොත් queue වෙලා ටිකක් ඉඳලා යනවා)
     MAX_PENDING:        3,           // එකම වෙලේ queue වෙන msg ගාන; වැඩි නම් ඇය "හෙමින්" කියනවා
     MAX_ENCODED_LEN:    7_500,       // URL-encoded prompt එකේ උපරිම දිග
+    // Gemini (cookies) route: no GET-url limit there, so longer messages and more history can be sent
+    GEMINI_MAX_INPUT_LEN: 500,       // his message, in characters (the endpoint route still cuts at MAX_INPUT_LEN)
+    GEMINI_HISTORY_LINES: 14,        // lines of the last-24h chat that start (or restart) a Gemini conversation
+    GEMINI_HISTORY_CHARS: 180,       // every one of those lines is cut to this many characters
     // human feel
     TYPE_MIN_MS:        600,
     TYPE_PER_CHAR_MS:   45,          // + per character (× character speed)
@@ -58,6 +61,8 @@ const pending  = new Map();   // sender → queue වෙලා ඉන්න msg 
 const chains   = new Map();   // sender → promise chain (msg එකින් එක reply කරන්න)
 const gfMsgs = new Map();   // GF යවපු msg id → { girl, sender, at }  (ඒකට reply කළාම command නැතුව කතා කරනවා)
 const sleep = (ms) => new Promise(r => setTimeout(r, process.env.GF_FAST ? 0 : ms));   // GF_FAST=1 → no human delays (tests)
+// cut by whole characters: a plain .slice() can split an emoji in half and encodeURIComponent() then throws "URI malformed"
+function cutChars(s, n) { const a = [...String(s)]; return a.length > n ? a.slice(0, n).join('') : String(s); }
 
 // 🧹 Auto cleanup — prevent memory leak
 setInterval(() => {
@@ -1536,7 +1541,7 @@ function casualOf(g) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🌐 API REQUEST — dnuz.top (GET ?q=...)
+// 🌐 API REQUEST — dnuz.top (GET ?q=...)  → now the FALLBACK: Gemini through the cookies is tried first (lib/gf/ai.js)
 // ═══════════════════════════════════════════════════════════
 function sendHttpsRequest(message) {
     return new Promise((resolve, reject) => {
@@ -1965,17 +1970,14 @@ async function fetchAnswer(g, fullMessage, last, lang, allowMarker = false, opts
     let rateLimited = false;
     for (let attempt = 1; attempt <= CFG.MAX_ATTEMPTS; attempt++) {
         try {
-            let raw = null;
-            if (opts.web && webchat && webchat.available()) {
-                try { raw = await webchat.ask(opts.web.key, opts.web); }
-                catch (e) { console.error(`🌐 ${g.name}: Gemini-web failed (${e.message}) → ai.dnuz.top`); raw = null; }
-            }
-            if (raw == null) raw = await sendHttpsRequest(fullMessage);
+            // Gemini through the account cookies first (a real conversation = her memory); the old ai.dnuz.top endpoint only if that fails
+            const got = await AI.ask({ gemini: opts.gemini, endpoint: () => sendHttpsRequest(fullMessage) });
+            let raw = got.text;
             // "@@plinks https://…@@" = the AI decided she should run a tool. Always stripped from the text.
             const mk = parseMarker(raw);
             raw = mk.clean;
             const marker = allowMarker ? mk.cmd : null;
-            if (!raw && marker) return { parts: [], rateLimited: false, marker };
+            if (!raw && marker) { got.commit(); return { parts: [], rateLimited: false, marker }; }
             if (hasBanned(raw)) throw new Error('BANNED_WORD in reply');
             if (lang === 'en' && !isEnglishReply(raw)) throw new Error('NOT ENGLISH');
 
@@ -1990,6 +1992,7 @@ async function fetchAnswer(g, fullMessage, last, lang, allowMarker = false, opts
             if (leaksPrompt(joined)) throw new Error('PRIVATE TAG / PROMPT LEAKED in reply');
             if (last && joined === last) throw new Error('REPEATED previous reply');
 
+            got.commit();          // only an answer that is really going to be sent becomes part of her Gemini conversation
             return { parts, rateLimited: false, marker };
         } catch (e) {
             console.error(`❌ ${g.name} attempt ${attempt}/${CFG.MAX_ATTEMPTS}:`, e.message);
@@ -2009,9 +2012,10 @@ async function fetchAnswer(g, fullMessage, last, lang, allowMarker = false, opts
 async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
     // text නැතුව command එක විතරක් ගැහුවොත් → ඔහු "හායි" කිව්වා වගේ සලකනවා
     if (!q || !q.trim()) q = getRel(`${g.name}_${sender}`).lang === 'en' ? 'hi' : 'හායි';
-    q = q.trim().slice(0, CFG.MAX_INPUT_LEN);
+    const qLong = cutChars(q.trim(), CFG.GEMINI_MAX_INPUT_LEN);   // what the Gemini (cookies) route gets: no URL limit there
+    q = cutChars(q.trim(), CFG.MAX_INPUT_LEN);                    // the endpoint route (a GET url) still gets the short one
 
-    if (hasInjection(q)) {
+    if (hasInjection(q) || hasInjection(qLong)) {
         if (detectLang(q) === 'en') return reply(EN_TEXT.inject);
         return reply(`ඒ මොනවද ඔය කියන්නේ... 😐 හිතෙන දේ සාමාන්‍ය විදියට කියන්න.`);
     }
@@ -2055,23 +2059,6 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         return s + `${g.name}:`;
     };
 
-    // 🌐 Gemini-web conversation: first turn = persona + history + memory; later turns = only memory + tags + his message
-    //    (Gemini keeps the earlier messages itself). No URL length limit here.
-    const composeNext = () => {
-        let s = '';
-        const ctxLines = extra.ctx && extra.ctx.full;
-        if (ctxLines) s += `WHAT YOU KNOW ABOUT HIM (private, never quote it as a list): ${ctxLines}\n`;
-        if (examples.length) s += `TONE EXAMPLE (match mood and vocabulary, never copy word for word): ${examples[0][0]}: ${examples[0][1]}\n`;
-        return `${s}${tags}\n\n${him}: ${q}\n${g.name}:`;
-    };
-    const web = (webchat && webchat.enabled()) ? {
-        key: key,
-        sig: base,                                   // persona / language / mode changed → a new conversation
-        language: lang === 'en' ? 'en' : 'si',
-        first: () => compose(messages, 2, 'full'),
-        next: composeNext,
-    } : null;
-
     // URL එක දිග වැඩි වුණොත් පියවරෙන් පියවර කෙටි කරනවා (examples → history → memory)
     const candidates = [
         compose(messages, 2, 'full'),
@@ -2087,6 +2074,30 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         candidates.find(c => encodeURIComponent(c).length <= CFG.MAX_ENCODED_LEN) ||
         candidates[candidates.length - 1];
 
+    // ── Gemini (cookies) route: a real conversation per person, so there is no URL budget and the history need not be resent.
+    //    prime = starts (or restarts) a conversation: instructions + what she knows + last-24h lines + his message
+    //    turn  = the next messages of that conversation: small private context + his message   (lib/gf/ai.js picks one)
+    const clipLine = (t) => { const a = [...String(t || '').replace(/\s+/g, ' ').trim()]; return a.length > CFG.GEMINI_HISTORY_CHARS ? a.slice(0, CFG.GEMINI_HISTORY_CHARS - 1).join('') + '…' : a.join(''); };
+    const earlier = (extra.history && extra.history.length ? extra.history : messages.slice(0, -1)).slice(-CFG.GEMINI_HISTORY_LINES);
+    const earlierText = earlier.map((m) => {
+        const t = clipLine(m.content);
+        if (!t) return '';
+        if (m.role === 'user') return `${him}: ${t}\n`;
+        const note = /^\[(.*)\]$/.exec(t);                      // "[I ran plinks … for him]" = something she did, not something she said
+        return note ? `(${g.name}: ${note[1]})\n` : `${g.name}: ${t}\n`;
+    }).join('');
+    const knows = (extra.ctx && extra.ctx.full) ? `\nWHAT YOU KNOW ABOUT HIM (private, never quote it as a list): ${extra.ctx.full}` : '';
+    const toneLines = (n) => (n && examples.length
+        ? `\nTONE EXAMPLES (match mood and vocabulary, never copy word for word):` + examples.slice(0, n).map(([label, text]) => `\n${label}: ${text}`).join('')
+        : '');
+    const geminiPlan = {
+        key, sender,
+        sig: String(hash(base)),                                  // changes when her instructions change (language, mode) → they are sent again
+        language: lang === 'en' ? 'en' : 'si',
+        prime: `System Instructions: ${base}${knows}${toneLines(2)}\n${tags}\n\n${earlierText}${him}: ${qLong}\n${g.name}:`,
+        turn: `(You are still ${g.name}: keep following your System Instructions.)${knows}${toneLines(1)}\n${tags}\n\n${him}: ${qLong}\n${g.name}:`,
+    };
+
     // 👀 msg එක "දකිනවා" (blue tick)
     try { await conn.readMessages([mek.key]); } catch {}
 
@@ -2097,7 +2108,7 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         lastRequestAt.set(sender, Date.now());
     }
 
-    const work = fetchAnswer(g, fullMessage, last, lang, !!extra.allowMarker, { admitAi, web });     // API call එක දැන්ම පටන් ගන්නවා (never rejects)
+    const work = fetchAnswer(g, fullMessage, last, lang, !!extra.allowMarker, { admitAi, gemini: geminiPlan });     // API call එක දැන්ම පටන් ගන්නවා (never rejects)
     await sleep(rand(g.human.read[0], g.human.read[1]));
 
     // රෑ 1-5 ට නිදාගෙන හිටපු කෙනෙක් ඇහැරෙන්න වෙලා යනවා
