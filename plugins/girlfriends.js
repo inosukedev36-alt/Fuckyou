@@ -11,6 +11,9 @@
 const https = require("https");
 const { parseMarker } = require('../lib/gf/tools');
 const { toneOf, casualPool } = require('../lib/gf/lines');
+// Gemini WEB (cookies) backend: one conversation per girl+user. Any failure → the old ai.dnuz.top endpoint below.
+let webchat = null;
+try { webchat = require('../lib/gf/webchat'); } catch (e) { console.error('⚠️ gf webchat disabled:', e.message); }
 // NOTE: since the AI-girlfriend rewrite this file is the CHAT ENGINE only (personas, prompt, AI call,
 // human-like typing). Commands, memory, onboarding and tool-running live in plugins/gf-brain.js.
 
@@ -1962,7 +1965,12 @@ async function fetchAnswer(g, fullMessage, last, lang, allowMarker = false, opts
     let rateLimited = false;
     for (let attempt = 1; attempt <= CFG.MAX_ATTEMPTS; attempt++) {
         try {
-            let raw = await sendHttpsRequest(fullMessage);
+            let raw = null;
+            if (opts.web && webchat && webchat.available()) {
+                try { raw = await webchat.ask(opts.web.key, opts.web); }
+                catch (e) { console.error(`🌐 ${g.name}: Gemini-web failed (${e.message}) → ai.dnuz.top`); raw = null; }
+            }
+            if (raw == null) raw = await sendHttpsRequest(fullMessage);
             // "@@plinks https://…@@" = the AI decided she should run a tool. Always stripped from the text.
             const mk = parseMarker(raw);
             raw = mk.clean;
@@ -2047,6 +2055,23 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         return s + `${g.name}:`;
     };
 
+    // 🌐 Gemini-web conversation: first turn = persona + history + memory; later turns = only memory + tags + his message
+    //    (Gemini keeps the earlier messages itself). No URL length limit here.
+    const composeNext = () => {
+        let s = '';
+        const ctxLines = extra.ctx && extra.ctx.full;
+        if (ctxLines) s += `WHAT YOU KNOW ABOUT HIM (private, never quote it as a list): ${ctxLines}\n`;
+        if (examples.length) s += `TONE EXAMPLE (match mood and vocabulary, never copy word for word): ${examples[0][0]}: ${examples[0][1]}\n`;
+        return `${s}${tags}\n\n${him}: ${q}\n${g.name}:`;
+    };
+    const web = (webchat && webchat.enabled()) ? {
+        key: key,
+        sig: base,                                   // persona / language / mode changed → a new conversation
+        language: lang === 'en' ? 'en' : 'si',
+        first: () => compose(messages, 2, 'full'),
+        next: composeNext,
+    } : null;
+
     // URL එක දිග වැඩි වුණොත් පියවරෙන් පියවර කෙටි කරනවා (examples → history → memory)
     const candidates = [
         compose(messages, 2, 'full'),
@@ -2072,7 +2097,7 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         lastRequestAt.set(sender, Date.now());
     }
 
-    const work = fetchAnswer(g, fullMessage, last, lang, !!extra.allowMarker, { admitAi });     // API call එක දැන්ම පටන් ගන්නවා (never rejects)
+    const work = fetchAnswer(g, fullMessage, last, lang, !!extra.allowMarker, { admitAi, web });     // API call එක දැන්ම පටන් ගන්නවා (never rejects)
     await sleep(rand(g.human.read[0], g.human.read[1]));
 
     // රෑ 1-5 ට නිදාගෙන හිටපු කෙනෙක් ඇහැරෙන්න වෙලා යනවා
