@@ -26,6 +26,7 @@ const { line, helpText, relText } = require('../lib/gf/lines');
 const People = require('../lib/gf/people');
 const registry = require('../lib/gf/registry');
 const runctx = require('../lib/gf/runctx');
+const AI = require('../lib/gf/ai');
 const { checkPerm, runTool } = require('../lib/gf/exec');
 const { GIRLS, CFG, processChat, say, detectLang, gfMsgs, casualOf } = require('./girlfriends');
 
@@ -184,10 +185,16 @@ async function chat(conn, mek, m, ctx, user, g, lang, text, who = {}) {
     const entries = store.recent(phone);
     const { ctx: ctxLines, birthdayNow } = buildCtx(user, entries, text, { mode, person: who.person, known: who.known || [] });
     const { quotedText } = quotedInfo(m);
+    // the last-24h log (without the message he just sent) starts / restarts her Gemini conversation (lib/gf/ai.js)
+    const cur = String(text || '').trim().slice(0, 2000);
+    const history = entries
+        .filter((e, i) => !(i === entries.length - 1 && e.role === 'user' && e.text === cur))
+        .map((e) => ({ role: e.role === 'user' ? 'user' : 'assistant', content: e.text }));
     await processChat(conn, mek, ctx.from, ctx.reply, ctx.sender, text, personaFor(g, mode), {
         mode,
         admitAi: gfc().STRANGERS_ADMIT_AI !== false,     // only used in casual mode: honest if sincerely asked "are you an AI?"
         ctx: ctxLines,
+        history,
         allowMarker: true,
         onReply: (t) => {
             store.addMsg(phone, 'gf', t, g.key);
@@ -485,7 +492,7 @@ async (conn, mek, m, ctx) => {
             `🧠 Your messages in the last ${gfc().MEMORY_HOURS || 24}h: ${n}\n\nTell her in chat to update anything ("my birthday is 14 May").`);
     }
     if (sub === 'forget') {
-        if (/\byes\b|ඔව්/.test(arg)) { await store.forget(phone); store.removePerson(speakerIds(ctx, mek)); return reply(line('forgot', casualOf(g), user, 'en')); }
+        if (/\byes\b|ඔව්/.test(arg)) { await store.forget(phone); store.removePerson(speakerIds(ctx, mek)); await AI.forget([ctx.sender, ...speakerIds(ctx, mek)]); return reply(line('forgot', casualOf(g), user, 'en')); }
         return reply(line('forgetAsk', casualOf(g), user, 'en', { p }));
     }
     if (sub === 'reset') { store.patchUser(phone, { step: 'name', askedStep: '', tries: 0 }); return reply('Okay, she will ask you again 🙂 say hi!'); }
