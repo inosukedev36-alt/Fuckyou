@@ -21,6 +21,11 @@
  *    PDF_ONLY (CONFIG, default true): only the renamed PDFs are sent – no caption, no quote,
  *    no "Sending…"/summary messages. A message still appears if something fails or is stopped.
  *
+ *    CHAPTER_TRIES (default 5): a chapter that fails (API / page download / PDF / sending) is tried again – up to that many
+ *      attempts in total, with a growing pause in between (CHAPTER_RETRY_MS).
+ *    STOP_ON_FAIL (default true): when a chapter still fails after its last attempt, the WHOLE batch stops right there –
+ *      nothing after it is sent – and the message tells you the "Retry: reply …" line to continue from that chapter.
+ *
  *    GROUP_THUMBNAIL (default true): the PDF's preview picture is the destination group's profile photo.
  *      It is stored inside the WhatsApp message itself (jpegThumbnail), so forwarding keeps it.
  *    GROUP_NAME_PAGE (default true): every PDF gets a small last page – "Powered by" + the destination group's name –
@@ -59,6 +64,9 @@ const CONFIG = {
   MAX_RESULTS: 10,         // how many search results to list
   SESSION_MIN: 30,         // minutes a list stays "replyable"
   DELAY_MS: 4000,          // pause between chapters in batch mode (helps avoid WhatsApp spam limits)
+  CHAPTER_TRIES: 5,        // attempts per chapter (API → page downloads → PDF → sending) before it counts as failed
+  CHAPTER_RETRY_MS: 3000,  // pause before the next attempt; it grows every time (3 s, 6 s, 9 s, 12 s)
+  STOP_ON_FAIL: true,      // true = a chapter that still fails after all its attempts stops the WHOLE batch right there; false = skip it and go on
   IMG_CONCURRENCY: 5,      // parallel page downloads
   ONLY_REQUESTER: true,   // true = only the person who ran .manhwa can reply to the lists
   TARGET_OWNER_ONLY: true, // true = sending to ANOTHER group needs isOwner (if your bot provides it)
@@ -240,7 +248,8 @@ async function embedImage(pdf, buf) {
   const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
   if (isJpg) return pdf.embedJpg(buf);
   if (isPng) return pdf.embedPng(buf);
-  if (!sharp) throw new Error('page is webp/other format → run: npm i sharp');
+  // a missing package is not fixed by trying again – skip the retries for this one
+  if (!sharp) throw Object.assign(new Error('page is webp/other format → run: npm i sharp'), { noRetry: true });
   const jpg = await sharp(buf).flatten({ background: '#ffffff' }).jpeg({ quality: 90 }).toBuffer();
   return pdf.embedJpg(jpg);
 }
@@ -489,15 +498,20 @@ async function buildPdf(urls, endText) {
 
 /* ───────────────────────── SENDING CHAPTERS ───────────────────────── */
 // job = { dest, other, destName, tag, warn, thumb, endText, notes }   dest = where the PDFs go, other = dest is not this chat
-async function sendOne(conn, session, idx, job, quoted) {
+// ONE attempt at a chapter: get it (API → page images → PDF), then send it.
+// `keep.built` holds the finished PDF between attempts, so when only the sending failed the chapter is not downloaded again.
+async function attemptChapter(conn, session, idx, job, quoted, keep) {
   const ch = session.chapters[idx - 1];
-  const { data } = await retry(
-    () => axios.get(CONFIG.API_DL, { params: { url: ch.url }, timeout: 60000 }), 2);
+  if (!keep.built) {
+    const { data } = await retry(
+      () => axios.get(CONFIG.API_DL, { params: { url: ch.url }, timeout: 60000 }), 2);
 
-  const pages = data && data.DownloadUrl;
-  if (!data || !data.status || !Array.isArray(pages) || !pages.length) throw new Error('API returned no pages');
+    const pages = data && data.DownloadUrl;
+    if (!data || !data.status || !Array.isArray(pages) || !pages.length) throw new Error('API returned no pages');
 
-  const pdf = await buildPdf(pages, job.endText);
+    keep.built = { pdf: await buildPdf(pages, job.endText), pageCount: pages.length };
+  }
+  const { pdf, pageCount } = keep.built;
   const fileName = `${job.tag ? `(${job.tag})` : ''}${safeName(`${session.title} - ${ch.title}`)}.pdf`;
   const content = { document: pdf, mimetype: 'application/pdf', fileName };
   if (job.thumb) content.jpegThumbnail = job.thumb; // group photo – part of the message itself, so forwards keep it
@@ -505,7 +519,7 @@ async function sendOne(conn, session, idx, job, quoted) {
     content.caption = [
       `🔞 *${session.title}*`,
       `📄 Chapter: ${ch.title}`,
-      `📃 Pages: ${pages.length}`,
+      `📃 Pages: ${pageCount}`,
       '',
       '│ Manhwa PDF Download',
       '',
@@ -518,6 +532,25 @@ async function sendOne(conn, session, idx, job, quoted) {
   } catch (e) {
     e.sendFail = true; // delivery problem (not a download/PDF problem)
     throw e;
+  }
+}
+
+// Gets + sends one chapter. A failed attempt (API, page download, PDF, delivery) is repeated, up to CONFIG.CHAPTER_TRIES
+// attempts in total. Only when the LAST attempt fails does the error reach sendChapters (e.attempts = how many were made).
+async function sendOne(conn, session, idx, job, quoted) {
+  const ch = session.chapters[idx - 1];
+  const tries = Math.max(1, Math.floor(Number(CONFIG.CHAPTER_TRIES)) || 1);
+  const keep = { built: null };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await attemptChapter(conn, session, idx, job, quoted, keep);
+    } catch (e) {
+      e.attempts = attempt;
+      if (attempt >= tries || e.noRetry || session.cancel) throw e; // out of attempts (or pointless / cancelled) → sendChapters reports it
+      console.error(`[manhwa] ${session.title} / ${ch.title} – attempt ${attempt}/${tries} failed (${e.message}) → trying again`);
+      await sleep((Number(CONFIG.CHAPTER_RETRY_MS) || 0) * attempt);
+      if (session.cancel) throw e; // "stop" arrived while waiting
+    }
   }
 }
 
@@ -556,10 +589,17 @@ async function sendChapters(conn, session, picks, replyMsg, job) {
       done.add(idx);
       sendFails = 0;
     } catch (e) {
-      console.error(`[manhwa] ${title} / ${chapters[idx - 1].title}:`, e.message);
+      const name = chapters[idx - 1].title;
+      console.error(`[manhwa] ${title} / ${name}:`, e.message);
       sendFails = e.sendFail ? sendFails + 1 : 0;
-      if (!batch) await say(conn, from, `❌ *${chapters[idx - 1].title}* failed\n${e.message}`, replyMsg);
-      if (sendFails >= 2) { aborted = e.message; break; } // target is clearly not receiving – stop wasting time
+      const after = e.attempts > 1 ? ` after ${e.attempts} attempts` : '';
+      if (!batch) await say(conn, from, `❌ *${name}* failed${after}\n${e.message}`, replyMsg);
+      // every attempt at this chapter failed → stop the whole batch right here, so nothing after it gets sent.
+      // (with STOP_ON_FAIL off, the old rule remains: 2 failed deliveries in a row = the target is clearly not receiving)
+      if (batch && !session.cancel && (CONFIG.STOP_ON_FAIL || sendFails >= 2)) {
+        aborted = `*${name}* could not be ${e.sendFail ? 'sent' : 'fetched'}${after}:\n${e.message}`;
+        break;
+      }
     }
     if (batch && i < picks.length - 1 && !session.cancel) await sleep(CONFIG.DELAY_MS);
   }
@@ -568,9 +608,9 @@ async function sendChapters(conn, session, picks, replyMsg, job) {
   await react(conn, replyMsg, aborted || session.cancel ? '🛑' : missing.length ? '⚠️' : '✅');
   if (batch && (!quiet || missing.length || aborted || session.cancel)) {
     const to = other ? ` to *${destName}*` : '';
-    const lines = [aborted
-      ? `🛑 Aborted — sending${to || ' here'} keeps failing:\n${aborted}`
-      : `${session.cancel ? '🛑 Stopped' : '✅ Done'} — sent *${done.size}/${picks.length}* chapters${to}.`];
+    const head = aborted ? '🛑 Aborted' : session.cancel ? '🛑 Stopped' : '✅ Done';
+    const lines = [`${head} — sent *${done.size}/${picks.length}* chapters${to}.`];
+    if (aborted) lines.push(`❌ ${aborted}`);
     if (missing.length) {
       const retryText = [ranges(missing), other ? job.dest : '', tag ? `(${tag})` : ''].filter(Boolean).join(' ');
       lines.push(`⚠️ Not sent: ${ranges(missing)}`, `↩️ Retry: reply *${retryText}*`);
