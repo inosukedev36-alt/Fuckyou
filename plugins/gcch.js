@@ -33,6 +33,9 @@ function advice(x) {
         return 'Google ගේ response headers ලොකු වැඩියි. අලුත් lib/gemini.js එක (https.request + header limit 256KB) දාලාද බලන්න; තාමත් එනවා නම් GEMINI_MAX_HEADER_BYTES=1048576 දාන්න.';
     }
     if (/^(ENOTFOUND|EAI_AGAIN)$/.test(sys)) return 'DNS error → server එකට gemini.google.com හොයාගන්න බෑ. internet / DNS බලන්න.';
+    if (x.code === 'AUTH' && /SNlM0e|WIZ_global_data/.test(String(x.message))) {
+        return 'Google ඒ cookies ලොග් වුණු ඒවා විදිහට සලකන්නේ නෑ (signed-out page එකක් එනවා) → cookies මැරිලා / Google block කරලා. විසඳුම: incognito window එකක gemini.google.com එකේ login වෙලා cookies export කරන්න, ඊට පස්සේ ඒ window එක log out නොකර close කරලා lib/Geminicook.txt replace කරන්න (browser එකෙන් ආයෙ rotate නොවෙන්න). Restart ඕනේ නෑ, ආයෙ /gcch කරන්න.';
+    }
     switch (x.code) {
         case 'BAD_INPUT':
             return 'cookies වල header එකකට දාන්න බැරි character එකක් තියෙනවා. lib/Geminicook.txt එක ආයෙ copy කරන්න.';
@@ -85,6 +88,16 @@ function format(r) {
     L.push(`⚙️ Route: ${rt.mode || '?'} · conversations ${rt.threads ? 'ON' : 'OFF'} (${rt.conversations || 0} active) · cookie route ${rt.cookieRouteSleeping ? `😴 sleeping until ${clock(rt.sleepsUntil)}` : 'awake'}`);
     if (rt.mode === 'endpoint') L.push('⚠️ GF_AI=endpoint → the bot ignores the cookies, whatever this test says.');
     if (rt.lastError) L.push(`⚠️ Last error while chatting (${ago(rt.lastError.agoSec)}): ${rt.lastError.tag} ${rt.lastError.message}`);
+
+    // the keep-alive: rotates the cookies every few minutes so they do not go stale
+    const ka = r.keepAlive;
+    if (ka) {
+        L.push(!ka.enabled ? '🔄 Keep-alive: OFF (GEMINI_ROTATE=off)'
+            : ka.error ? `🔄 Keep-alive: ⚠️ rotation failed (${ago(ka.error.agoSec)}): ${shown(ka.error)}`
+            : ka.lastOkAgoSec != null ? `🔄 Keep-alive: ✅ cookies rotated ${ago(ka.lastOkAgoSec)} (every ${ka.everyMin} min)`
+            : ka.running ? `🔄 Keep-alive: on, the first rotation comes within a minute (then every ${ka.everyMin} min)`
+            : '🔄 Keep-alive: starts after the first successful login');
+    }
 
     // verdict
     L.push('');
