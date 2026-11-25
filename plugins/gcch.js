@@ -4,6 +4,8 @@
 //   /gcch mem    the same + a second message in the SAME conversation (does Gemini remember the first? = her memory)
 //
 // It makes real calls to Gemini (lib/gf/ai.js → check()). Nothing secret is ever printed: only cookie NAMES, counts and timings.
+// Every failure is shown WITH its codes:  [NETWORK · ECONNRESET] · [AUTH · HTTP 302] · [HTTP 500] · [TIMEOUT] · [TypeError · UND_ERR_…]
+//   first = what kind of failure (AUTH, NETWORK, HTTP, TIMEOUT, RATE_LIMIT, EMPTY, NO_COOKIES, BAD_INPUT), then the low-level code, then the HTTP status.
 // No `use:` line on purpose: she must never start this one herself (and `gf: false` keeps it that way).
 const path = require('path');
 const { cmd } = require('../command');
@@ -15,15 +17,25 @@ const clock = (iso) => {
     try { return new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Colombo', hour: '2-digit', minute: '2-digit' }); } catch { return ''; }
 };
 
+const ago = (s) => (s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)}h ago`);
+const shown = (x) => `${AI.tagOf(x)} ${x.message}`;          // "[NETWORK · ECONNRESET] read ECONNRESET"
+
 function where(source) {
     if (!source || source.startsWith('env ')) return source;
     const rel = path.relative(process.cwd(), source);
     return rel && !rel.startsWith('..') ? rel : source;
 }
 
-// what to do, by the kind of failure (Sinhala, short)
-function advice(code) {
-    switch (code) {
+// what to do, by the failure (Sinhala, short): the low-level code first, then the kind
+function advice(x) {
+    const sys = String(x.sys || '');
+    if (/HEADERS?_OVERFLOW/i.test(sys)) {
+        return 'Google ගේ response headers ලොකු වැඩියි. අලුත් lib/gemini.js එක (https.request + header limit 256KB) දාලාද බලන්න; තාමත් එනවා නම් GEMINI_MAX_HEADER_BYTES=1048576 දාන්න.';
+    }
+    if (/^(ENOTFOUND|EAI_AGAIN)$/.test(sys)) return 'DNS error → server එකට gemini.google.com හොයාගන්න බෑ. internet / DNS බලන්න.';
+    switch (x.code) {
+        case 'BAD_INPUT':
+            return 'cookies වල header එකකට දාන්න බැරි character එකක් තියෙනවා. lib/Geminicook.txt එක ආයෙ copy කරන්න.';
         case 'NO_COOKIES':
             return 'cookies නෑ → lib/Geminicook.txt හදන්න (Cookie header / cookies.txt / JSON export), නැත්නම් GEMINI_COOKIES / GEMINI_COOKIE_FILE දාන්න.';
         case 'AUTH':
@@ -45,7 +57,7 @@ function format(r) {
     const c = r.cookies;
 
     if (r.fatal) {
-        L.push(`❌ ${r.fatal}`);
+        L.push(`❌ ${shown(r.fatal)}`);
         L.push('', 'ඇය දැන් ai.dnuz.top endpoint එකෙන් විතරක් උත්තර දෙනවා.');
         return L.join('\n');
     }
@@ -59,11 +71,11 @@ function format(r) {
         L.push('   ' + Object.entries(c.has).map(([n, ok]) => `${n} ${tick(ok)}`).join('  '));
     }
     // 2) login, 3) test message, 4) memory
-    if (r.login) L.push(r.login.ok ? `🔑 Login: ✅ accepted (${sec(r.login.ms)})` : `🔑 Login: ❌ ${r.login.message}`);
-    if (r.ping) L.push(r.ping.ok ? `💬 Test message: ✅ "${r.ping.text}" (${sec(r.ping.ms)})` : `💬 Test message: ❌ ${r.ping.message}`);
+    if (r.login) L.push(r.login.ok ? `🔑 Login: ✅ accepted (${sec(r.login.ms)})` : `🔑 Login: ❌ ${shown(r.login)}`);
+    if (r.ping) L.push(r.ping.ok ? `💬 Test message: ✅ "${r.ping.text}" (${sec(r.ping.ms)})` : `💬 Test message: ❌ ${shown(r.ping)}`);
     if (r.memory) {
         if (r.memory.ok) L.push(`🧠 Memory: ✅ it remembered "${r.memory.word}" in the same conversation (${sec(r.memory.ms)})`);
-        else if (r.memory.code) L.push(`🧠 Memory: ❌ ${r.memory.message}`);
+        else if (r.memory.code) L.push(`🧠 Memory: ❌ ${shown(r.memory)}`);
         else L.push(`🧠 Memory: ❌ ${r.memory.sameThread ? 'same conversation, but it forgot the word' : 'Gemini started a NEW conversation instead of continuing'}`);
     }
 
@@ -72,12 +84,13 @@ function format(r) {
     L.push('');
     L.push(`⚙️ Route: ${rt.mode || '?'} · conversations ${rt.threads ? 'ON' : 'OFF'} (${rt.conversations || 0} active) · cookie route ${rt.cookieRouteSleeping ? `😴 sleeping until ${clock(rt.sleepsUntil)}` : 'awake'}`);
     if (rt.mode === 'endpoint') L.push('⚠️ GF_AI=endpoint → the bot ignores the cookies, whatever this test says.');
+    if (rt.lastError) L.push(`⚠️ Last error while chatting (${ago(rt.lastError.agoSec)}): ${rt.lastError.tag} ${rt.lastError.message}`);
 
     // verdict
     L.push('');
     const bad = !c || !c.count ? { code: 'NO_COOKIES' } : r.login && !r.login.ok ? r.login : r.ping && !r.ping.ok ? r.ping : null;
     if (bad) {
-        L.push(`❌ ${advice(bad.code)}`);
+        L.push(`❌ ${advice(bad)}`);
         L.push('ඒ වෙනකම් ඇය ai.dnuz.top endpoint එකෙන් උත්තර දෙනවා.');
     } else {
         L.push('✅ Cookies හරි, ඇයට උත්තර දෙන්නේ Gemini.');
@@ -106,7 +119,7 @@ cmd({
         await reply(format(await AI.check({ memory })));
     } catch (e) {
         console.error('[gcch]', e);
-        await reply(`❌ The check itself crashed: ${e && e.message}`);
+        await reply(`❌ The check itself crashed: ${shown(AI.errInfo(e))}`);
     } finally {
         busy = false;
     }
