@@ -30,9 +30,9 @@ const ANIMESCHEDULE_TOKEN = 'JnjC6I74KflRhsrnsp81WTXlPOHEIA';   // AnimeSchedule
 
 // Message එක channel එකකින් "Forwarded" කරපු වගේ පේන්න (View channel button එකත් එක්ක)
 const FORWARD_LOOK = true;                          // ඕනේ නැත්නම් false කරන්න
-const CHANNEL_INVITE = '';  // https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R
-const CHANNEL_JID = '120363431069029289@newsletter';                             // JID එක (120363xxxxxxxxxx@newsletter) දන්නවා නම් මෙතන දාන්න. හිස් නම් invite code එකෙන් auto හොයාගන්නවා
-const CHANNEL_NAME = 'just anime stuff';                            // හිස් නම් channel එකේ නම auto ගන්නවා
+const CHANNEL_INVITE = 'https://www.whatsapp.com/channel/0029Vb9co3HFi8xjeHvhRI2m';  // https://whatsapp.com/channel/0029VbE79hZBadmXSbahq33R
+const CHANNEL_JID = '120363431533516657@newsletter';                             // JID එක (120363xxxxxxxxxx@newsletter) දන්නවා නම් මෙතන දාන්න. හිස් නම් invite code එකෙන් auto හොයාගන්නවා
+const CHANNEL_NAME = ' 𝓐𝓷𝓲𝓶𝓮 𝓝𝓮𝔀𝓼 𝓑𝔂 𝓘𝓷𝓸𝓼𝓾𝓴𝓮';                            // හිස් නම් channel එකේ නම auto ගන්නවා
 
 // ශ්‍රී ලංකා වේලාව = UTC+5:30 (DST නැහැ).
 // Server එකේ timezone එක මොකක් වුණත් වැරදෙන්නේ නැති වෙන්න ගණනය කරන්නේ මෙතනින්ම.
@@ -414,7 +414,7 @@ function buildDelayed(list) {
 
 // AnimeSchedule.net API එකේ terms අනුව data source එකට credit දෙන්න ඕනේ ("Source" line එක)
 function buildFooter(source) {
-    return `> ⚠️ *මෙහි ඇති වේලාවන් සුළු වශයෙන් වෙනස් විය හැකිය.* ⚠️\n> 📡 Source: ${source}\n> ⚡ᴾᵒʷᵉʳᵉᵈ ᵇʸ ᴷⁱⁿᵍᴾᵒᵈᵈᵃᴹᵒᵈᶻ 𝙓 ᴵⁿᵒˢᵘᵏᵉ`;
+    return `> ⚠️ *මෙහි ඇති වේලාවන් සුළු වශයෙන් වෙනස් විය හැකිය.* ⚠️ \n> ⚡ᴾᵒʷᵉʳᵉᵈ ᵇʸ ᴷⁱⁿᵍᴾᵒᵈᵈᵃᴹᵒᵈᶻ 𝙓 ᴵⁿᵒˢᵘᵏᵉ`;
 }
 
 // → { text }  (header + list + footer — මුළු message එකම)
