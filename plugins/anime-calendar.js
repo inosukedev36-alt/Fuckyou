@@ -553,7 +553,7 @@ async (conn, mek, m, { from, reply }) => {
     }
 });
 
-// ═══════════════ AUTO (හැම දවසකම රෑ 12:00 ට — ලංකා වේලාවෙන්) ═══════════════
+// ═══════════════ AUTO (හැම දවසකම රෑ 12:00 ට — ලංකා වේලාවෙන්) ══════════════
 async function sendDailyAnimeCalendarAuto() {
     if (!config.ANIME_NEWS || !config.ANIME_NEWS.TARGET_JIDS || config.ANIME_NEWS.TARGET_JIDS.length === 0) return;
 
