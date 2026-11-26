@@ -9,7 +9,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@dnuzi/baileys": "^0.1.4",
+    "@dnuzi/baileys": "latest",
+    "node-webpmux": "latest",
     "@ngrok/ngrok": "^1.7.0",
     "adm-zip": "^0.6.1",
     "axios": "^1.6.0",
