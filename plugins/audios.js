@@ -16,7 +16,7 @@ const fsp = require('fs/promises')
 const nodePath = require('path')
 const nodeOs = require('os')
 const WebP = require('node-webpmux')
-const baileys = require('@whiskeysockets/baileys')
+const baileys = require('@dnuzi/baileys')
 
 const { proto, prepareWAMessageMedia, downloadMediaMessage, normalizeMessageContent } = baileys
 const execFileAsync = promisify(execFile)
