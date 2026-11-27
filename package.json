@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@dnuzi/baileys": "latest",
-    "node-webpmux": "latest",
+    "node-webpmux": "^3.2.1"
     "@ngrok/ngrok": "^1.7.0",
     "adm-zip": "^0.6.1",
     "axios": "^1.6.0",
