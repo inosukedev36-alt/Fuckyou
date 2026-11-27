@@ -519,8 +519,8 @@ async function handleSaudio(ctx) {
     // --- build the sticker ---
     react('⏳')
     let [pack, author] = args.split('|').map((v) => v.trim())
-    pack = pack || global.stickpack || ''
-    author = author || global.stickauth || ''
+    pack = pack || global.stickpack || '🅢🅗🅘🅡🅞-🅜🅓'
+    author = author || global.stickauth || 'ᵇʸ ⁱⁿᵒˢᵘᵏᵉ'
 
     const original = await media.download()
     const stickerBuf = await buildSticker(original, media, pack, author)
