@@ -27,6 +27,7 @@ const People = require('../lib/gf/people');
 const registry = require('../lib/gf/registry');
 const runctx = require('../lib/gf/runctx');
 const AI = require('../lib/gf/ai');
+const Media = require('../lib/gf/media');
 const { checkPerm, runTool } = require('../lib/gf/exec');
 const { GIRLS, CFG, processChat, say, detectLang, gfMsgs, casualOf } = require('./girlfriends');
 
@@ -186,7 +187,12 @@ async function chat(conn, mek, m, ctx, user, g, lang, text, who = {}) {
     const { ctx: ctxLines, birthdayNow } = buildCtx(user, entries, text, { mode, person: who.person, known: who.known || [] });
     const { quotedText } = quotedInfo(m);
     // the last-24h log (without the message he just sent) starts / restarts her Gemini conversation (lib/gf/ai.js)
-    const cur = String(text || '').trim().slice(0, 2000);
+    const logged = who.media ? `${Media.tagOf(who.media)}${text ? ' ' + text : ''}` : text;      // exactly what handle() wrote to the log
+    const cur = String(logged || '').trim().slice(0, 2000);
+    // a photo / sticker / video / voice note / document: downloaded here (size-capped), read by Gemini inside processChat (never throws)
+    const media = who.media
+        ? await Media.load(who.media).catch(() => ({ kind: who.media.kind, label: Media.labelOf(who.media), caption: who.media.caption, file: null, why: 'it did not load' }))
+        : null;
     const history = entries
         .filter((e, i) => !(i === entries.length - 1 && e.role === 'user' && e.text === cur))
         .map((e) => ({ role: e.role === 'user' ? 'user' : 'assistant', content: e.text }));
@@ -195,6 +201,7 @@ async function chat(conn, mek, m, ctx, user, g, lang, text, who = {}) {
         admitAi: gfc().STRANGERS_ADMIT_AI !== false,     // only used in casual mode: honest if sincerely asked "are you an AI?"
         ctx: ctxLines,
         history,
+        media,
         allowMarker: true,
         onReply: (t) => {
             store.addMsg(phone, 'gf', t, g.key);
@@ -288,7 +295,7 @@ async function onboard(conn, mek, m, ctx, user, g, lang, text) {
 }
 
 // ═══════════════════════════ one incoming message ═══════════════════════════
-async function handle(conn, mek, m, ctx, rawText) {
+async function handle(conn, mek, m, ctx, rawText, mediaInfo = null) {
     ensureTools();
     const phone = ctx.senderNumber;
     const user0 = store.getUser(phone);
@@ -317,10 +324,10 @@ async function handle(conn, mek, m, ctx, rawText) {
 
     // "@94771234567 hi" → "@Nimal hi" for people she knows (the router keeps the raw text; the AI and the 24h log get names)
     const named = People.nameMentions(text, lookupName);
-    store.addMsg(phone, 'user', named.text);                 // everything he says is remembered for 24h
+    store.addMsg(phone, 'user', mediaInfo ? `${Media.tagOf(mediaInfo)}${named.text ? ' ' + named.text : ''}` : named.text);   // everything he says is remembered for 24h (a photo / voice note … is logged as "[photo] caption")
 
     // 1) "are you sure?" answers
-    const conf = pendingConfirm.get(key);
+    const conf = text ? pendingConfirm.get(key) : null;                 // (a photo is neither "yes" nor "no")
     if (conf) {
         pendingConfirm.delete(key);
         if (conf.expires > Date.now()) {
@@ -331,6 +338,7 @@ async function handle(conn, mek, m, ctx, rawText) {
 
     // 2) getting to know him (in a DM)
     if (user.step !== 'done' && !ctx.isGroup) {
+        if (mediaInfo && !text) return;                                 // a photo cannot answer "what is your name?"
         if (person && user.step === 'name' && !user.askedStep) {          // introduced by her boyfriend: the name question is already answered
             store.patchUser(phone, { name: person.name, step: 'age', askedStep: 'age', tries: 0 });
             return v.tell('knownAge', { relText: relText(person.relation, lang) });
@@ -346,7 +354,7 @@ async function handle(conn, mek, m, ctx, rawText) {
     const input = { text, quotedText, quotedType, hasQuoted, mentions: m.mentioned || [], isGroup: ctx.isGroup };
 
     // 3b) her boyfriend introduces someone, or asks who somebody is
-    if (isBoyfriend(ctx)) {
+    if (isBoyfriend(ctx) && text) {
         const exclude = [...botIdsOf(conn), ...ids];
         const quotedSender = m.quoted && m.quoted.sender;
         const intro = People.parseIntroduction(text, { mentions: input.mentions, quotedSender, exclude });
@@ -358,7 +366,7 @@ async function handle(conn, mek, m, ctx, rawText) {
     }
 
     // 4) she asked for a missing link / title / number — this message is the answer
-    const pa = pendingAsk.get(key);
+    const pa = text ? pendingAsk.get(key) : null;
     if (pa) {
         pendingAsk.delete(key);
         if (pa.expires > Date.now()) {
@@ -378,11 +386,11 @@ async function handle(conn, mek, m, ctx, rawText) {
     }
 
     // 5) does he want her to DO something?
-    const r = route(input);
+    const r = text ? route(input) : null;                              // (a caption like "download this" can still start a tool; a bare photo cannot)
     if (r) return execRoute(conn, mek, m, ctx, user, g, lang, r);
 
     // 6) otherwise: just talk (AI + memory)
-    return chat(conn, mek, m, ctx, store.getUser(phone), g, lang, named.text, { person, known: named.known });
+    return chat(conn, mek, m, ctx, store.getUser(phone), g, lang, named.text, { person, known: named.known, media: mediaInfo });
 }
 
 async function introduce(conn, mek, ctx, user, g, lang, intro) {
@@ -419,6 +427,7 @@ function fresh(mek) {
 async function onBody(conn, mek, m, ctx) {
     try {
         if (!gfc().ENABLED) return;
+        if (Media.enabled() && Media.describe(mek)) return;        // photo / video / voice note / document (even with a caption) → onMedia
         const text = String(ctx.body || '').trim();
         if (!text || ctx.isCmd || (mek.key.fromMe && !ctx.selfChat)) return;   // her own words never; what he types in "Message yourself" (ctx.selfChat) yes
         if (config.MODE === 'private' && !ctx.isOwner && !ctx.isSudo) return;
@@ -444,6 +453,32 @@ async function onBody(conn, mek, m, ctx) {
     } catch (e) { console.error('[GF] listener error:', e); }
 }
 cmd({ on: 'body', dontAddCommandList: true, filename: __filename }, onBody);
+
+// ═══════════════════════════ the media listeners ═══════════════════════════
+// photo · sticker · video · voice note / audio · document: she looks at it / listens to it / reads it (through Gemini, see lib/gf/media.js
+// + lib/gf/ai.js) and answers like to any other message. GF_MEDIA=off (or config.GF.MEDIA = false) → media is ignored again.
+async function onMedia(conn, mek, m, ctx) {
+    try {
+        if (!gfc().ENABLED || !Media.enabled()) return;
+        const info = Media.describe(mek);
+        if (!info) return;
+        if (ctx.isCmd || mek.key.fromMe) return;                   // a photo whose caption is a command is a command · her own words never
+        if (config.MODE === 'private' && !ctx.isOwner && !ctx.isSudo) return;
+        const phone = ctx.senderNumber;
+        if (!phone || !fresh(mek)) return;
+        if (m && m.quoted && m.quoted.id && runctx.isClaimed(m.quoted.id)) return;       // the photo is the answer a plugin asked for
+        const id = mek.key.id;
+        if (id) { if (seen.has(id)) return; seen.add(id); if (seen.size > 2000) seen.delete(seen.values().next().value); }
+
+        const g = gfOf();
+        const ctx2 = { ...ctx, body: ctx.body || info.caption };  // (the caption of a document is not in ctx.body)
+        if (!isAddressed(conn, m, ctx2, g)) return;                // in a group: only a reply to her / @her / her name in the caption
+
+        enqueue(phone, () => handle(conn, mek, m, ctx2, info.caption, info),
+            () => { try { conn.sendMessage(ctx.from, { text: g.flood }, { quoted: mek }); } catch {} });
+    } catch (e) { console.error('[GF] media listener error:', e); }
+}
+for (const on of ['image', 'sticker', 'video', 'audio', 'document']) cmd({ on, dontAddCommandList: true, filename: __filename }, onMedia);
 
 // ═══════════════════════════ typed commands ═══════════════════════════
 const LOOKUP = new Map();
@@ -577,4 +612,4 @@ const brain = {
 };
 global.gfBrain = brain;
 
-module.exports = { brain, _t: { queueBusy: (phone) => queues.has(phone), isBoyfriend, modeOf, BOT_KEY, speakerIds, botIdsOf, store, handle, onBody, onboard, buildCtx, isAddressed, enqueue, pendingAsk, pendingConfirm, gfOf, nameCallRe, fresh } };
+module.exports = { brain, _t: { queueBusy: (phone) => queues.has(phone), isBoyfriend, modeOf, BOT_KEY, speakerIds, botIdsOf, store, handle, onBody, onMedia, onboard, buildCtx, isAddressed, enqueue, pendingAsk, pendingConfirm, gfOf, nameCallRe, fresh } };
