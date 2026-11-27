@@ -2009,20 +2009,31 @@ async function fetchAnswer(g, fullMessage, last, lang, allowMarker = false, opts
 // ═══════════════════════════════════════════════════════════
 // 💬 CORE HANDLER
 // ═══════════════════════════════════════════════════════════
-async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
-    // text නැතුව command එක විතරක් ගැහුවොත් → ඔහු "හායි" කිව්වා වගේ සලකනවා
-    if (!q || !q.trim()) q = getRel(`${g.name}_${sender}`).lang === 'en' ? 'hi' : 'හායි';
-    const qLong = cutChars(q.trim(), CFG.GEMINI_MAX_INPUT_LEN);   // what the Gemini (cookies) route gets: no URL limit there
-    q = cutChars(q.trim(), CFG.MAX_INPUT_LEN);                    // the endpoint route (a GET url) still gets the short one
+// what she is told when he sends something other than text (the file itself travels with the message, see lib/gf/media.js + lib/gf/ai.js)
+const MEDIA_HINT = {
+    photo: '(He just sent you a PHOTO — it is attached to this message. LOOK at it and react to what you really see, the way a real girlfriend would on WhatsApp: warm, natural, short, mention one specific thing you notice. Never describe it like a report and never mention that it is an attachment.)',
+    sticker: '(He just sent you a STICKER — attached as an image. A sticker is only a mood or a joke: understand what it shows and answer in the same mood, VERY short (one line, maybe one emoji). Do not describe the sticker.)',
+    video: '(He just sent you a VIDEO — attached. WATCH it and react to what happens in it, natural and short, mention one specific thing. Never mention that it is an attachment.)',
+    voice: '(He just sent you a VOICE NOTE — attached. LISTEN to it: understand what he says (any language) and answer it directly and naturally, as if you heard his voice. Never say "transcript" or "audio file".)',
+    audio: '(He just sent you an AUDIO file — attached. LISTEN to it and react naturally and short. If it is a song or music, say what you feel about it.)',
+    document: '(He just sent you a DOCUMENT — attached. READ it and react naturally to what it is (his assignment, a bill, a CV …). Only go into details if he asked something; keep it chat-short.)',
+};
 
-    if (hasInjection(q) || hasInjection(qLong)) {
+async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
+    const media = extra.media || null;      // a photo / sticker / video / voice note / document he sent (lib/gf/media.js); q is then only its caption
+    // text නැතුව command එක විතරක් ගැහුවොත් → ඔහු "හායි" කිව්වා වගේ සලකනවා
+    if ((!q || !q.trim()) && !media) q = getRel(`${g.name}_${sender}`).lang === 'en' ? 'hi' : 'හායි';
+    const qLong = cutChars(String(q || '').trim(), CFG.GEMINI_MAX_INPUT_LEN);   // what the Gemini (cookies) route gets: no URL limit there
+    q = cutChars(String(q || '').trim(), CFG.MAX_INPUT_LEN);                    // the endpoint route (a GET url) still gets the short one
+
+    if (hasInjection(q) || hasInjection(qLong) || (media && hasInjection(media.label))) {      // (a document's file name is text he typed too)
         if (detectLang(q) === 'en') return reply(EN_TEXT.inject);
         return reply(`ඒ මොනවද ඔය කියන්නේ... 😐 හිතෙන දේ සාමාන්‍ය විදියට කියන්න.`);
     }
 
     const key = `${g.name}_${sender}`;
     const last = lastAssistant(key);                    // කලින් reply එක (user msg එක push කරන්න කලින්)
-    const messages = pushHistory(key, 'user', q);
+    const messages = pushHistory(key, 'user', media ? `[${media.label}]${q ? ' ' + q : ''}` : q);
 
     // 🧠 situation + සම්බන්ධතා මතකය + දැන් කරන දේ/mood
     const rel  = getRel(key);
@@ -2059,16 +2070,23 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
         return s + `${g.name}:`;
     };
 
+    // the old ai.dnuz.top endpoint reads text only: when it has to answer instead of Gemini she is told she cannot see / hear what he sent
+    const cannot = !media ? '' : (media.kind === 'voice' || media.kind === 'audio') ? 'listen to' : media.kind === 'document' ? 'open' : 'see';
+    const msgsE = !media ? messages : [...messages.slice(0, -1), {
+        role: 'user',
+        content: `[he sent you a ${media.label}${q ? ` with the caption "${q}"` : ''}, but you cannot ${cannot} it right now — react naturally in one short line (for example ask what it is), never pretend you saw or heard it]`,
+    }];
+
     // URL එක දිග වැඩි වුණොත් පියවරෙන් පියවර කෙටි කරනවා (examples → history → memory)
     const candidates = [
-        compose(messages, 2, 'full'),
-        compose(messages.slice(-2), 2, 'full'),
-        compose(messages.slice(-2), 1, 'full'),
-        compose(messages.slice(-2), 0, 'full'),
-        compose(messages.slice(-1), 0, 'full'),
-        compose(messages.slice(-1), 1, 'min'),
-        compose(messages.slice(-1), 0, 'min'),
-        compose(messages.slice(-1), 0, 'none'),
+        compose(msgsE, 2, 'full'),
+        compose(msgsE.slice(-2), 2, 'full'),
+        compose(msgsE.slice(-2), 1, 'full'),
+        compose(msgsE.slice(-2), 0, 'full'),
+        compose(msgsE.slice(-1), 0, 'full'),
+        compose(msgsE.slice(-1), 1, 'min'),
+        compose(msgsE.slice(-1), 0, 'min'),
+        compose(msgsE.slice(-1), 0, 'none'),
     ];
     const fullMessage =
         candidates.find(c => encodeURIComponent(c).length <= CFG.MAX_ENCODED_LEN) ||
@@ -2090,12 +2108,18 @@ async function processChat(conn, mek, from, reply, sender, q, g, extra = {}) {
     const toneLines = (n) => (n && examples.length
         ? `\nTONE EXAMPLES (match mood and vocabulary, never copy word for word):` + examples.slice(0, n).map(([label, text]) => `\n${label}: ${text}`).join('')
         : '');
+    const readable = !!(media && media.file);                    // false → too big / too long / a kind of file Gemini cannot read / would not download
+    const userLine = media ? `[${media.label}]${qLong ? ' ' + qLong : ''}` : qLong;
+    const mediaHint = !media ? '' : (readable
+        ? `${MEDIA_HINT[media.kind] || MEDIA_HINT.document}\n`
+        : `(He sent you a ${media.label}, but you could not open it${media.why ? ` (${media.why})` : ''}. Do not pretend you saw or heard it: say so naturally and ask him what it is. One short line.)\n`);
     const geminiPlan = {
         key, sender,
         sig: String(hash(base)),                                  // changes when her instructions change (language, mode) → they are sent again
         language: lang === 'en' ? 'en' : 'si',
-        prime: `System Instructions: ${base}${knows}${toneLines(2)}\n${tags}\n\n${earlierText}${him}: ${qLong}\n${g.name}:`,
-        turn: `(You are still ${g.name}: keep following your System Instructions.)${knows}${toneLines(1)}\n${tags}\n\n${him}: ${qLong}\n${g.name}:`,
+        media: readable ? media.file : null,                      // { buffer, filename, mimeType } → lib/gf/ai.js uploads it to Gemini with the message
+        prime: `System Instructions: ${base}${knows}${toneLines(2)}\n${tags}\n\n${earlierText}${mediaHint}${him}: ${userLine}\n${g.name}:`,
+        turn: `(You are still ${g.name}: keep following your System Instructions.)${knows}${toneLines(1)}\n${tags}\n\n${mediaHint}${him}: ${userLine}\n${g.name}:`,
     };
 
     // 👀 msg එක "දකිනවා" (blue tick)
