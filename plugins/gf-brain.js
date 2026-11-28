@@ -426,6 +426,7 @@ function fresh(mek) {
 
 async function onBody(conn, mek, m, ctx) {
     try {
+        AI.useConn(conn);                                         // (a live connection to tell the owner when the Gemini cookies die)
         if (!gfc().ENABLED) return;
         if (Media.enabled() && Media.describe(mek)) return;        // photo / video / voice note / document (even with a caption) → onMedia
         const text = String(ctx.body || '').trim();
@@ -459,6 +460,7 @@ cmd({ on: 'body', dontAddCommandList: true, filename: __filename }, onBody);
 // + lib/gf/ai.js) and answers like to any other message. GF_MEDIA=off (or config.GF.MEDIA = false) → media is ignored again.
 async function onMedia(conn, mek, m, ctx) {
     try {
+        AI.useConn(conn);
         if (!gfc().ENABLED || !Media.enabled()) return;
         const info = Media.describe(mek);
         if (!info) return;
