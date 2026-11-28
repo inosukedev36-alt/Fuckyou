@@ -66,10 +66,10 @@ async (conn, mek, m, { from, reply, q }) => {
     await reply(loadingMsg);
 
     const SCRAPER_API_KEY = 'f909b655aac3dce76db22bee716dbab8'; 
-    const maxImages = 100; 
+    const maxImages = 50; 
     let uniqueImages = [];
     let currentPage = 1;
-    const maxPages = 6; // උපරිම පිටු 6ක් බලනවා
+    const maxPages = 30; // උපරිම පිටු 6ක් බලනවා
 
     try {
         while (uniqueImages.length < maxImages && currentPage <= maxPages) {
