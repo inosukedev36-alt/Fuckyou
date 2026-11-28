@@ -36,7 +36,7 @@ async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, sen
 
         // 🔁 Edit the same message for each remaining step
         for (let i = 1; i < steps.length; i++) {
-            await new Promise(resolve => setTimeout(resolve, 1000)); // 1s delay
+            await new Promise(resolve => setTimeout(resolve, 2000)); // 1s delay
             try {
                 await conn.sendMessage(from, {
                     text: steps[i],
