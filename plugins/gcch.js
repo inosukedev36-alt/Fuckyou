@@ -2,6 +2,7 @@
 //
 //   /gcch        cookies found? · does Google accept them? · one real test message
 //   /gcch mem    the same + a second message in the SAME conversation (does Gemini remember the first? = her memory)
+//   /gcset       (below) fresh cookies from WhatsApp — reply to a message that holds them with /gcset; /gcset clear = back to the cookie file
 //
 // It makes real calls to Gemini (lib/gf/ai.js → check()). Nothing secret is ever printed: only cookie NAMES, counts and timings.
 // Every failure is shown WITH its codes:  [NETWORK · ECONNRESET] · [AUTH · HTTP 302] · [HTTP 500] · [TIMEOUT] · [TypeError · UND_ERR_…]
@@ -21,7 +22,7 @@ const ago = (s) => (s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min
 const shown = (x) => `${AI.tagOf(x)} ${x.message}`;          // "[NETWORK · ECONNRESET] read ECONNRESET"
 
 function where(source) {
-    if (!source || source.startsWith('env ')) return source;
+    if (!source || source.startsWith('env ') || !path.isAbsolute(source)) return source;
     const rel = path.relative(process.cwd(), source);
     return rel && !rel.startsWith('..') ? rel : source;
 }
@@ -34,13 +35,15 @@ function advice(x) {
     }
     if (/^(ENOTFOUND|EAI_AGAIN)$/.test(sys)) return 'DNS error → server එකට gemini.google.com හොයාගන්න බෑ. internet / DNS බලන්න.';
     if (x.code === 'AUTH' && /SNlM0e|WIZ_global_data/.test(String(x.message))) {
-        return 'Google ඒ cookies ලොග් වුණු ඒවා විදිහට සලකන්නේ නෑ (signed-out page එකක් එනවා) → cookies මැරිලා / Google block කරලා. විසඳුම: incognito window එකක gemini.google.com එකේ login වෙලා cookies export කරන්න, ඊට පස්සේ ඒ window එක log out නොකර close කරලා lib/Geminicook.txt replace කරන්න (browser එකෙන් ආයෙ rotate නොවෙන්න). Restart ඕනේ නෑ, ආයෙ /gcch කරන්න.';
+        return 'Google ඒ cookies ලොග් වුණු ඒවා විදිහට සලකන්නේ නෑ (signed-out page එකක් එනවා) → cookies මැරිලා / Google block කරලා. විසඳුම: incognito window එකක gemini.google.com එකේ login වෙලා cookies export කරන්න, ඒ window එක log out නොකර close කරන්න (browser එකෙන් ආයෙ rotate නොවෙන්න), cookies message එකක් විදිහට එවලා ඒකට reply කරලා /gcset ගහන්න (නැත්නම් lib/Geminicook.txt replace කරන්න). Restart ඕනේ නෑ, ආයෙ /gcch කරන්න.';
     }
     switch (x.code) {
         case 'BAD_INPUT':
-            return 'cookies වල header එකකට දාන්න බැරි character එකක් තියෙනවා. lib/Geminicook.txt එක ආයෙ copy කරන්න.';
+            return /no cookies/i.test(String(x.message))
+                ? 'ඒ text එකේ cookies කිසිවක් නෑ. Cookie header / cookies.txt / JSON export එකක් එවන්න.'
+                : 'cookies වල header එකකට දාන්න බැරි character එකක් තියෙනවා. cookies ආයෙ copy කරන්න.';
         case 'NO_COOKIES':
-            return 'cookies නෑ → lib/Geminicook.txt හදන්න (Cookie header / cookies.txt / JSON export), නැත්නම් GEMINI_COOKIES / GEMINI_COOKIE_FILE දාන්න.';
+            return 'cookies නෑ → cookies message එකක් විදිහට එවලා ඒකට reply කරලා /gcset ගහන්න, නැත්නම් lib/Geminicook.txt හදන්න (Cookie header / cookies.txt / JSON export) / GEMINI_COOKIES දාන්න.';
         case 'AUTH':
             return 'Google ඒ cookies පිළිගන්නේ නෑ (expire වෙලා / logout වෙලා). gemini.google.com එකේ login වෙච්ච browser එකකින් අලුත් cookies export කරලා lib/Geminicook.txt replace කරන්න. Restart ඕනේ නෑ, ආයෙ /gcch කරන්න.';
         case 'RATE_LIMIT':
@@ -94,9 +97,18 @@ function format(r) {
     if (ka) {
         L.push(!ka.enabled ? '🔄 Keep-alive: OFF (GEMINI_ROTATE=off)'
             : ka.error ? `🔄 Keep-alive: ⚠️ rotation failed (${ago(ka.error.agoSec)}): ${shown(ka.error)}`
-            : ka.lastOkAgoSec != null ? `🔄 Keep-alive: ✅ cookies rotated ${ago(ka.lastOkAgoSec)} (every ${ka.everyMin} min)`
+            : ka.lastOkAgoSec != null ? (ka.lastNames && ka.lastNames.length
+                ? `🔄 Keep-alive: ✅ rotated ${ago(ka.lastOkAgoSec)} (${ka.lastNames.join(', ')}) · every ${ka.everyMin} min`
+                : `🔄 Keep-alive: ⚠️ Google answered ${ago(ka.lastOkAgoSec)} but sent no fresh cookie`)
             : ka.running ? `🔄 Keep-alive: on, the first rotation comes within a minute (then every ${ka.everyMin} min)`
             : '🔄 Keep-alive: starts after the first successful login');
+    }
+
+    // can the rotated cookies be saved somewhere that survives a restart?
+    if (r.persist !== undefined && r.persist !== null) {
+        L.push(r.persist
+            ? `💾 Cookie store: MongoDB ✅ — the rotated cookies survive a restart${ka && ka.stored === false && ka.lastOkAgoSec != null ? ' (but the last save failed!)' : ''}`
+            : '💾 Cookie store: ⚠️ MongoDB not reachable — rotated cookies would be lost at a restart');
     }
 
     // verdict
@@ -135,5 +147,68 @@ cmd({
         await reply(`❌ The check itself crashed: ${shown(AI.errInfo(e))}`);
     } finally {
         busy = false;
+    }
+});
+
+
+// ═════════════════════════ /gcset ═════════════════════════
+// Fresh cookies without touching a file or redeploying (owner only):
+//   1) paste the cookies into the chat (a Cookie header, cookies.txt text or a JSON export)
+//   2) reply to that message with /gcset          (or in one message:  /gcset <cookies>)
+//   /gcset clear → back to lib/Geminicook.txt
+// Google must accept the cookies FIRST; only then they are saved (MongoDB) and used at once.
+const GCSET_USAGE = [
+    '🍪 *Gemini cookies දාන්නේ මෙහෙමයි*',
+    '1) cookies ටික (Cookie header / cookies.txt / JSON) message එකක් විදිහට එවන්න',
+    '2) ඒ message එකට reply කරලා /gcset කියලා ගහන්න (නැත්නම් එකම message එකේ: /gcset <cookies>)',
+    'Google පිළිගන්නවා නම් විතරයි save වෙන්නේ.',
+    '/gcset clear → ආයෙ lib/Geminicook.txt පාවිච්චි කරන්න',
+].join('\n');
+
+let setting = false;
+
+cmd({
+    pattern: 'gcset',
+    desc: 'Give the bot fresh Gemini cookies (owner only): reply to a message that holds them with /gcset · /gcset clear',
+    category: 'owner',
+    react: '🍪',
+    gf: false,
+    filename: __filename,
+}, async (conn, mek, m, { from, q, isOwner, reply }) => {
+    if (!isOwner) return reply('🔒 This command is only for the bot owner.');
+    if (setting) return reply('⏳ Still checking the cookies you sent, one moment...');
+    setting = true;
+    try {
+        const quoted = m && m.quoted && m.quoted.msg;
+        const quotedText = typeof quoted === 'string' ? quoted : (quoted && (quoted.text || quoted.conversation || quoted.caption)) || '';
+        const raw = String(q || '').trim() || String(quotedText || '').trim();
+
+        if (/^(clear|reset|remove)$/i.test(raw)) {
+            await AI.clearCookies();
+            return await reply('🧹 The pasted cookies are removed. The bot uses lib/Geminicook.txt (or GEMINI_COOKIES) again. Check with /gcch');
+        }
+        if (!raw) return await reply(GCSET_USAGE);
+
+        const done = await AI.setCookies(raw);
+
+        // the cookies must not stay in the chat: remove what only the owner's own account can remove
+        const drop = async (key) => { try { await conn.sendMessage(from, { delete: key }); } catch { /* not removable from here */ } };
+        await drop(mek.key);
+        if (m && m.quoted && m.quoted.fromMe && m.quoted.id) await drop({ remoteJid: from, fromMe: true, id: m.quoted.id });
+
+        await reply([
+            `✅ Gemini cookies saved (${done.count} cookies) and Google accepts them.`,
+            done.stored
+                ? '💾 Kept in MongoDB: they survive restarts and are refreshed automatically.'
+                : '⚠️ MongoDB was not reachable: they work now, but a restart would lose them (run /gcset again later).',
+            '🗑️ Delete the message that holds the cookies from your phone too.',
+            'Check everything with /gcch',
+        ].join('\n'));
+    } catch (e) {
+        console.error('[gcset]', e);
+        const info = AI.errInfo(e);
+        await reply(`❌ Not saved: ${shown(info)}\n${advice(info)}`);
+    } finally {
+        setting = false;
     }
 });
