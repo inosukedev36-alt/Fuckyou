@@ -1,4 +1,4 @@
-// plugins/anime-calendar.js — Daily Anime Release Calendar (AnimeSchedule.net API, AniList fallback)
+// plugins/anime-calendar.js — Daily Anime Release Calendar (poddax-api.dev)
 const axios = require('axios');
 const cron = require('node-cron');
 const config = require('../config');
@@ -12,21 +12,10 @@ const CAPTION_MAX_CHANNEL = 1000;   // Channel එකේ image caption එක ~1
 const CACHE_TTL = 15 * 60 * 1000;   // දත්ත විනාඩි 15ක් cache කරනවා
 
 // ── දත්ත මූලාශ්‍රය ──
-// AnimeSchedule.net API (නිවැරදිම, animeschedule.net එකේ timetable එකමයි). ඒකට token එකක් ඕනේ:
-//   https://animeschedule.net/users/<username>/settings/api → Application එකක් හදලා "App Token" එක ගන්න
-//   ඒක config.ANIMESCHEDULE_TOKEN එකට (නැත්නම් ANIMESCHEDULE_TOKEN env variable එකට) දාන්න.
-// Token එක නැත්නම් / AnimeSchedule වැඩ නැත්නම් AniList එකෙන් ගන්නවා (අඩු නිවැරදියි).
-const AS_TZ = 'Asia/Colombo';
-const COMPACT_MODE = true;          // true: ප්‍රධාන anime විතරයි (donghua, kids / දිගුකාලීන series, shorts, movies නැතුව). false: AnimeSchedule එකේ තියෙන ඔක්කොම
-const MAX_EPISODE = 100;            // COMPACT_MODE: මීට වැඩි episode number එකක් තියෙන දිගුකාලීන series (Anpanman, Pokémon...) අයින් කරනවා
-const ALWAYS_INCLUDE = ['one piece', 'detective conan'];   // COMPACT_MODE: episode number ලොකු වුණත් තියාගන්න ඕනේ ඒවා (title එකේ කොටසක්)
-const EXCLUDE_TITLES = [];          // COMPACT_MODE: කිසිම විදිහට ඕනේ නැති ඒවා (title එකේ කොටසක්, පොඩි අකුරෙන්. උදා: ['pan dorobou'])
-const TIME_MODE = 'sub';            // 'sub' = SUB (subtitle) release වේලාව main | 'raw' = ජපන්/චීන් TV විකාශන (RAW) වේලාව main
-const SHOW_OTHER_TIME = true;       // අනිත් වේලාව වෙනස් නම් වරහන් ඇතුළේ පෙන්නනවා: "(RAW 08:00 PM)" / "(SUB 09:30 PM)"
-const SHOW_EPISODE = false;         // Title එක ළඟ episode number එක ("Ep 5") පෙන්නනවා
-const INCLUDE_DONGHUA = true;       // COMPACT_MODE නැති වෙලාවට: චීන anime (donghua) ඇතුළත් කරනවා
-const INCLUDE_DUB = false;          // English dub episodes ඇතුළත් කරනවා (default: නැහැ)
-const ANIMESCHEDULE_TOKEN = 'JnjC6I74KflRhsrnsp81WTXlPOHEIA';   // AnimeSchedule.net "App Token" (config.ANIMESCHEDULE_TOKEN / env variable එකෙනුත් දාන්න පුළුවන්, ඒවාට මුල් තැන). මේ file එක public තැනක (GitHub වගේ) දාන්න එපා
+// poddax-api.dev → අද දවසේ anime list එක (title, වේලාව, thumbnail). Token එකක් ඕනේ නැහැ.
+// API එක දෙන වේලාවන් ලංකා වේලාවෙන් කියලා සලකලා එහෙමම පෙන්නනවා.
+const API_URL = 'https://poddax-api.dev/today';
+const EXCLUDE_TITLES = [];          // list එකේ කිසිම විදිහට ඕනේ නැති ඒවා (title එකේ කොටසක්, පොඩි අකුරෙන්. උදා: ['rilakkuma', 'keroro'])
 
 // Message එක channel එකකින් "Forwarded" කරපු වගේ පේන්න (View channel button එකත් එක්ක)
 const FORWARD_LOOK = true;                          // ඕනේ නැත්නම් false කරන්න
@@ -48,23 +37,10 @@ const typing = (sock, jid, state) =>
 
 // ═══════════════ ලංකා වේලාව ═══════════════
 
-// ලංකාවේ "අද" දවසේ පටන් ගන්නා (12:00 AM) සහ ඉවර වන වෙලාව — UNIX seconds
+// ලංකාවේ "අද" දවස — cache key එකට, සහ API එකෙන් දවසේ නම ආවේ නැත්නම් header එකට
 function getSLDay(baseMs = Date.now()) {
     const sl = new Date(baseMs + SL_OFFSET_MS);      // මෙතැන් සිට getUTC*() වලින් කියවන්නේ ලංකා වේලාවයි
-    const y = sl.getUTCFullYear();
-    const mo = sl.getUTCMonth();
-    const d = sl.getUTCDate();
-    const startTs = Math.floor((Date.UTC(y, mo, d) - SL_OFFSET_MS) / 1000);
-    return { y, mo, d, weekday: sl.getUTCDay(), startTs, endTs: startTs + 86400 };
-}
-
-// UNIX seconds → ලංකා වේලාවෙන් "06:30 PM"
-function slTime(ts) {
-    const sl = new Date(ts * 1000 + SL_OFFSET_MS);
-    const h24 = sl.getUTCHours();
-    const h12 = String(h24 % 12 || 12).padStart(2, '0');
-    const min = String(sl.getUTCMinutes()).padStart(2, '0');
-    return { hour: h24, text: `${h12}:${min} ${h24 >= 12 ? 'PM' : 'AM'}` };
+    return { y: sl.getUTCFullYear(), mo: sl.getUTCMonth(), d: sl.getUTCDate(), weekday: sl.getUTCDay() };
 }
 
 function cleanTitle(t) {
@@ -72,348 +48,98 @@ function cleanTitle(t) {
     return s.length > 60 ? s.slice(0, 57).trimEnd() + '...' : s;
 }
 
-// ═══════════════ AnimeSchedule.net (ප්‍රධාන මූලාශ්‍රය) ═══════════════
+// ═══════════════ poddax-api.dev ═══════════════
 
-const AS_BASE = 'https://animeschedule.net/api/v3';
-
-function getAsToken() {
-    return String(config.ANIMESCHEDULE_TOKEN || process.env.ANIMESCHEDULE_TOKEN || ANIMESCHEDULE_TOKEN || '').trim();
-}
-
-// Timetable එක ගන්නවා. fail වුණොත් (timeout / rate limit / server error) 3 පාරක් වෙනකම් ආයෙ try කරනවා
-async function asRequest(path, params, tries = 3) {
+// අද anime list එක ගන්නවා. fail වුණොත් (timeout / server error) 3 පාරක් වෙනකම් ආයෙ try කරනවා
+async function apiRequest(tries = 3) {
     let lastErr;
     for (let i = 1; i <= tries; i++) {
         try {
-            const res = await axios.get(`${AS_BASE}${path}`, {
-                params,
+            const res = await axios.get(API_URL, {
                 timeout: 20000,
                 headers: {
-                    'Authorization': `Bearer ${getAsToken()}`,
-                    'Accept': 'application/json',
-                    'User-Agent': 'AnimeCalendarBot/1.0'
-                }
-            });
-            if (!Array.isArray(res.data)) throw new Error('AnimeSchedule: unexpected response');
-            return res.data;
-        } catch (e) {
-            lastErr = e;
-            const status = e.response?.status;
-            console.error(`⚠️ AnimeSchedule request failed (${i}/${tries}):`, status ? `HTTP ${status}` : e.message);
-            if (status === 401 || status === 403) {
-                console.error('⚠️ AnimeSchedule token is invalid or has no permission — check ANIMESCHEDULE_TOKEN.');
-                break;                                  // ආයෙ try කරලා වැඩක් නැහැ
-            }
-            if (status === 400) break;                  // params වැරදියි
-            if (i < tries) {
-                const reset = Number(e.response?.headers?.['x-ratelimit-reset']);               // rate limit reset වෙන UNIX time එක
-                const wait = status === 429 && reset ? Math.min(Math.max(reset - Date.now() / 1000, 1), 30) * 1000 : i * 2000;
-                await sleep(wait);
-            }
-        }
-    }
-    throw lastErr;
-}
-
-// ISO week number (AnimeSchedule එකේ week එක සඳුදාට පටන් ගන්නවා)
-function isoWeekOf(ms) {
-    const d = new Date(ms);
-    const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
-    const yearStart = Date.UTC(t.getUTCFullYear(), 0, 1);
-    return { year: t.getUTCFullYear(), week: Math.ceil(((t - yearStart) / 86400000 + 1) / 7) };
-}
-
-// අද දවසට අදාළ week එක(ක්). සාමාන්‍යයෙන් එකයි — සඳුදා දවසේ UTC අනුව week දෙකකට කැඩෙන නිසා දෙකම ගන්නවා
-function candidateWeeks(day) {
-    const found = new Map();
-    for (const ms of [day.startTs * 1000, (day.endTs - 1) * 1000, day.startTs * 1000 + SL_OFFSET_MS]) {
-        const w = isoWeekOf(ms);
-        found.set(`${w.year}-${w.week}`, w);
-    }
-    return [...found.values()];
-}
-
-// API එකේ datetime (ISO 8601 / RFC 3339) → ms.  Offset එකක් නැත්නම් ලංකා වේලාව ලෙස සලකනවා (tz=Asia/Colombo ඉල්ලපු නිසා)
-function parseApiDate(s) {
-    if (typeof s !== 'string') return NaN;
-    return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(s) ? s : `${s}+05:30`);
-}
-
-function titleOf(e) {
-    return cleanTitle(e.english || e.title || e.romaji || e.native || 'Unknown');
-}
-
-// "Ep 5" / "Ep 34-35" (episodes කීපයක් එකපාර) / "Final Ep 12"
-function epLabel(e) {
-    const n = Number(e.episodeNumber) || 0;
-    if (!n) return '';
-    const lo = Number(e.subtractedEpisodeNumber) || 0;
-    const total = Number(e.episodes) || 0;
-    if (lo && lo < n) return `Ep ${lo}-${n}`;
-    return total && n === total ? `Final Ep ${n}` : `Ep ${n}`;
-}
-
-// COMPACT_MODE rules (title එකේ කොටස් + episode number)
-function passesTitleRules(names, episode) {
-    const text = String(names).toLowerCase();
-    const has = (k) => text.includes(String(k).toLowerCase());
-    if (EXCLUDE_TITLES.some(has)) return false;
-    return !((Number(episode) || 0) > MAX_EPISODE && !ALWAYS_INCLUDE.some(has));
-}
-
-const NOT_MAIN_TYPE = /short|movie|special|ova|misc/;
-
-// COMPACT_MODE: "ප්‍රධාන" anime ද? (donghua, movie / short / special, දිගුකාලීන kids series නැතුව)
-function isMainAnime(e) {
-    if (e.donghua) return false;
-    const types = (Array.isArray(e.mediaTypes) ? e.mediaTypes : []).map((m) => String(m?.name || m?.route || m || '').toLowerCase());
-    if (types.length && types.every((t) => NOT_MAIN_TYPE.test(t))) return false;
-    return passesTitleRules([e.english, e.title, e.romaji].filter(Boolean).join(' '), e.episodeNumber);
-}
-
-// API entries → අද (ලංකා වේලාවෙන්) දවසේ list එක.
-// එක anime episode එකකට එක line එකක්: TIME_MODE එක අනුව SUB / RAW වේලාව main, අනිත් එක වරහන් ඇතුළේ.
-function normalizeAnimeSchedule(entries, day) {
-    const seen = new Set();
-    const groups = new Map();       // route|episode → { route, sub, raw, dub }
-    const delayed = new Map();      // route|episode → { title, epText }
-
-    for (const e of entries) {
-        if (!e || !e.route) continue;
-        const type = String(e.airType || '').toLowerCase();
-        if (type !== 'raw' && type !== 'sub' && !(INCLUDE_DUB && type === 'dub')) continue;
-        if (COMPACT_MODE ? !isMainAnime(e) : (e.donghua && !INCLUDE_DONGHUA)) continue;
-
-        const ms = parseApiDate(e.episodeDate);
-        if (!Number.isFinite(ms)) continue;
-        const ts = Math.floor(ms / 1000);
-        if (ts < day.startTs || ts >= day.endTs) continue;                  // අද (ලංකා වේලාවෙන්) නොවන ඒවා අයින්
-
-        const dupKey = `${e.route}|${type}|${ts}|${e.episodeNumber}`;
-        if (seen.has(dupKey)) continue;                                     // week දෙකකින් එකම entry එක ආවොත්
-        seen.add(dupKey);
-
-        const epKey = `${e.route}|${e.episodeNumber}|${e.subtractedEpisodeNumber || ''}`;
-
-        if (String(e.airingStatus || '').toLowerCase() === 'delayed-air') {   // Delay වෙලා — අද එන්නේ නැහැ
-            if (!delayed.has(epKey)) delayed.set(epKey, { title: titleOf(e), epText: epLabel(e) });
-            continue;
-        }
-
-        const key = type === 'dub' ? `${epKey}|dub` : epKey;
-        const g = groups.get(key) || { route: e.route };
-        g[type] = { e, ts };
-        groups.set(key, g);
-    }
-
-    let list = [...groups.values()];
-    if (COMPACT_MODE) {             // show එකකට එක line එකයි: RAW (TV) විකාශනය තියෙන episode එකට මුල් තැන, ඊට පස්සේ කලින්ම එක
-        const best = new Map();
-        const rank = (g) => [g.raw ? 0 : 1, (g.sub || g.raw || g.dub).ts];
-        for (const g of list) {
-            const cur = best.get(g.route);
-            if (!cur) { best.set(g.route, g); continue; }
-            const a = rank(g), b = rank(cur);
-            if (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) best.set(g.route, g);
-        }
-        list = [...best.values()];
-    }
-
-    const order = TIME_MODE === 'raw' ? ['raw', 'sub', 'dub'] : ['sub', 'raw', 'dub'];
-    const items = [];
-    for (const g of list) {
-        const main = g[order[0]] || g[order[1]] || g[order[2]];
-        if (!main) continue;
-        const other = main === g[order[0]] ? g[order[1]] : null;            // main එක කැමති වර්ගයේ නම් අනිත් වර්ගයේ (SUB ↔ RAW) වේලාව
-        items.push({
-            ts: main.ts,
-            time: slTime(main.ts).text,
-            otherTime: other && other.ts !== main.ts ? slTime(other.ts).text : '',
-            otherLabel: order[1].toUpperCase(),
-            dub: main === g.dub,
-            epText: epLabel(main.e),
-            title: titleOf(main.e)
-        });
-    }
-    items.sort((a, b) => a.ts - b.ts || a.title.localeCompare(b.title));
-
-    const delayedList = [...delayed.values()]
-        .map((d) => ({ title: d.title, epText: d.epText }))
-        .sort((a, b) => a.title.localeCompare(b.title));
-
-    return { source: 'AnimeSchedule.net', items, delayed: delayedList };
-}
-
-async function fetchAnimeSchedule(day) {
-    const entries = await asRequest('/timetables/all', { tz: AS_TZ });      // දැන් තියෙන week එක
-    const weeks = candidateWeeks(day);
-    if (weeks.length > 1) {                                                 // දවස week දෙකකට කැඩෙනවා නම් අනිත් week එකත් ගන්නවා
-        const extra = await Promise.allSettled(
-            weeks.map((w) => asRequest('/timetables/all', { tz: AS_TZ, year: w.year, week: w.week }))
-        );
-        extra.forEach((r) => {
-            if (r.status === 'fulfilled') entries.push(...r.value);
-            else console.warn('⚠️ AnimeSchedule extra week failed:', r.reason?.message);
-        });
-    }
-    return normalizeAnimeSchedule(entries, day);
-}
-
-// ═══════════════ AniList (fallback) ═══════════════
-
-const ANILIST_QUERY = `
-query ($start: Int, $end: Int, $page: Int) {
-  Page(page: $page, perPage: 50) {
-    pageInfo { hasNextPage }
-    airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {
-      airingAt
-      episode
-      media {
-        format
-        countryOfOrigin
-        title { romaji english }
-      }
-    }
-  }
-}`;
-
-// එක page එකක් ගන්නවා. fail වුණොත් (timeout / rate limit) 3 පාරක් වෙනකම් ආයෙ try කරනවා
-async function anilistRequest(variables, tries = 3) {
-    let lastErr;
-    for (let i = 1; i <= tries; i++) {
-        try {
-            const res = await axios.post('https://graphql.anilist.co', { query: ANILIST_QUERY, variables }, {
-                timeout: 15000,
-                headers: {
-                    'Content-Type': 'application/json',
                     'Accept': 'application/json',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
                 }
             });
-            if (res.data?.errors?.length) throw new Error(res.data.errors[0].message || 'AniList GraphQL error');
-            if (!res.data?.data?.Page) throw new Error('AniList empty response');
-            return res.data.data.Page;
+            const body = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+            if (!body || body.status === false || !Array.isArray(body.anime)) throw new Error('poddax-api: unexpected response');
+            return body;
         } catch (e) {
             lastErr = e;
             const status = e.response?.status;
-            console.error(`⚠️ AniList request failed (${i}/${tries}):`, status ? `HTTP ${status}` : e.message);
-            if (i < tries) {
-                const retryAfter = Number(e.response?.headers?.['retry-after']);
-                await sleep(status === 429 && retryAfter ? Math.min(retryAfter, 30) * 1000 : i * 2000);
-            }
+            console.error(`⚠️ poddax-api request failed (${i}/${tries}):`, status ? `HTTP ${status}` : e.message);
+            if (status && status < 500 && status !== 429) break;        // 4xx (429 නැතුව) — ආයෙ try කරලා වැඩක් නැහැ
+            if (i < tries) await sleep(i * 2000);
         }
     }
     throw lastErr;
 }
 
-// COMPACT_MODE (AniList): ජපන් TV / ONA anime විතරයි — චීන, movie, short, special, OVA නැතුව
-function isMainAniList(s) {
-    const m = s.media;
-    if (m.countryOfOrigin && m.countryOfOrigin !== 'JP') return false;
-    if (['MOVIE', 'SPECIAL', 'OVA', 'TV_SHORT', 'MUSIC'].includes(m.format)) return false;
-    return passesTitleRules([m.title?.english, m.title?.romaji].filter(Boolean).join(' '), s.episode);
-}
+// API response → { day, items: [{ title, time }] }
+// API එක දෙන order එකමයි (වේලාව අනුව කලින්ම sort වෙලා එන්නේ)
+function normalizeAnime(body) {
+    const seen = new Set();
+    const items = [];
+    for (const a of body.anime) {
+        const title = a && a.title ? cleanTitle(a.title) : '';
+        const time = a && a.time ? String(a.time).trim() : '';
+        if (!title || !time) continue;
 
-// අද දවසේ (ලංකා වේලාවෙන්) ඔක්කොම episodes — page එකකට 50 බැගින්, ඔක්කොම pages ගන්නවා
-async function fetchAniList(day) {
-    const all = [];
-    for (let page = 1; page <= 6; page++) {
-        const data = await anilistRequest({ start: day.startTs - 1, end: day.endTs, page });
-        all.push(...(data.airingSchedules || []));
-        if (!data.pageInfo?.hasNextPage) break;
+        const lower = title.toLowerCase();
+        if (EXCLUDE_TITLES.some((k) => lower.includes(String(k).toLowerCase()))) continue;
+
+        const key = `${lower}|${time}`;
+        if (seen.has(key)) continue;                        // එකම title එක එකම වේලාවට දෙපාරක් ආවොත්
+        seen.add(key);
+        items.push({ title, time });
     }
-    const items = all
-        .filter((s) => s.media)
-        .filter((s) => !COMPACT_MODE || isMainAniList(s))
-        .map((s) => {
-            const t = slTime(s.airingAt);
-            return {
-                ts: s.airingAt,
-                time: t.text,
-                epText: s.episode ? `Ep ${s.episode}` : '',
-                otherTime: '',
-                otherLabel: '',
-                dub: false,
-                title: cleanTitle(s.media.title?.english || s.media.title?.romaji || 'Unknown')
-            };
-        });
-    return { source: 'AniList', items, delayed: [] };
+    const dayItem = body.anime.find((a) => a && a.day);
+    return { day: dayItem ? String(dayItem.day).trim() : '', items };
 }
 
-// ═══════════════ දත්ත ගන්න හැටි (cache + fallback) ═══════════════
+// ═══════════════ දත්ත ගන්න හැටි (cache) ═══════════════
 
-const caches = {};          // name → { key, at, data, retryAt }
-let asDownUntil = 0;        // AnimeSchedule fail වුණාම විනාඩි 2ක් AniList කෙලින්ම පාවිච්චි කරනවා
-let asWarned = false;
+let cache = null;           // { key, at, data, retryAt }
 
-async function cached(name, day, loader) {
+async function getData(day) {
     const key = `${day.y}-${day.mo}-${day.d}`;
-    const c = caches[name];
-    const sameDay = c && c.key === key;
-    if (sameDay && Date.now() - c.at < CACHE_TTL) return c.data;
-    if (sameDay && Date.now() < (c.retryAt || 0)) return c.data;           // ළඟදි fail වුණා නම් ආයෙ ගහන්නේ නැහැ
+    const sameDay = cache && cache.key === key;
+    if (sameDay && Date.now() - cache.at < CACHE_TTL) return cache.data;
+    if (sameDay && Date.now() < (cache.retryAt || 0)) return cache.data;           // ළඟදි fail වුණා නම් ආයෙ ගහන්නේ නැහැ
 
     try {
-        const data = await loader();
-        caches[name] = { key, at: Date.now(), data };
+        const data = normalizeAnime(await apiRequest());
+        cache = { key, at: Date.now(), data };
         return data;
     } catch (e) {
         if (sameDay) {
-            c.retryAt = Date.now() + 2 * 60 * 1000;
-            console.warn(`⚠️ ${name} failed — using the cached list:`, e.message);
-            return c.data;
+            cache.retryAt = Date.now() + 2 * 60 * 1000;
+            console.warn('⚠️ poddax-api failed — using the cached list:', e.message);
+            return cache.data;
         }
         throw e;
     }
 }
 
-async function getData(day) {
-    if (getAsToken()) {
-        if (Date.now() >= asDownUntil) {
-            try {
-                return await cached('animeschedule', day, () => fetchAnimeSchedule(day));
-            } catch (e) {
-                asDownUntil = Date.now() + 2 * 60 * 1000;
-                console.error('⚠️ AnimeSchedule failed — falling back to AniList:', e.message);
-            }
-        }
-    } else if (!asWarned) {
-        asWarned = true;
-        console.warn('⚠️ ANIMESCHEDULE_TOKEN is not set — using AniList (less accurate). See the settings at the top of anime-calendar.js.');
-    }
-    return cached('anilist', day, () => fetchAniList(day));
-}
-
 // ═══════════════ Message එක හදනවා ═══════════════
 
-function buildHeader(day, total) {
+function buildHeader(dayName, total) {
     return [
         `╭━━━〔 📺 *TODAY ANIME* 〕━━━╮`,
-        `┃ 📅 *Day:* ${EN_DAYS[day.weekday]}`,
+        `┃ 📅 *Day:* ${dayName}`,
         `┃ 🎬 *Total:* ${total}`,
         `╰━━━━━━━━━━━━━━━━━━━━╯`
     ].join('\n');
 }
 
 // 1. Title
-// 🕐 08:00 PM  (RAW 07:30 PM)   ← TIME_MODE එක අනුව (RAW|SUB)
+// 🕐 08:00 PM
 function buildList(items) {
-    return items.map((i, n) => {
-        const ep = SHOW_EPISODE && i.epText ? ` (${i.epText})` : '';
-        const dub = i.dub ? ' [DUB]' : '';
-        const other = SHOW_OTHER_TIME && i.otherTime ? `  (${i.otherLabel} ${i.otherTime})` : '';
-        return `*${n + 1}. ${i.title}${ep}${dub}*\n🕐 ${i.time}${other}`;
-    }).join('\n\n');
+    return items.map((i, n) => `*${n + 1}. ${i.title}*\n🕐 ${i.time}`).join('\n\n');
 }
 
-function buildDelayed(list) {
-    const names = list.map((d) => `${d.title}${SHOW_EPISODE && d.epText ? ` (${d.epText})` : ''}`);
-    return `⏸️ *Delayed:* ${names.join(', ')}`;
-}
-
-// AnimeSchedule.net API එකේ terms අනුව data source එකට credit දෙන්න ඕනේ ("Source" line එක)
-function buildFooter(source) {
+function buildFooter() {
     return `> ⚠️ *මෙහි ඇති වේලාවන් සුළු වශයෙන් වෙනස් විය හැකිය.* ⚠️ \n> ⚡ᴾᵒʷᵉʳᵉᵈ ᵇʸ ᴷⁱⁿᵍᴾᵒᵈᵈᵃᴹᵒᵈᶻ 𝙓 ᴵⁿᵒˢᵘᵏᵉ`;
 }
 
@@ -421,11 +147,15 @@ function buildFooter(source) {
 async function buildCalendar() {
     const day = getSLDay();
     const data = await getData(day);
-    const parts = [buildHeader(day, data.items.length)];
+    const today = EN_DAYS[day.weekday];
 
+    if (data.day && data.day.toLowerCase() !== today.toLowerCase()) {
+        console.warn(`⚠️ poddax-api sent the ${data.day} list but today is ${today} (Sri Lanka time)`);
+    }
+
+    const parts = [buildHeader(data.day || today, data.items.length)];
     parts.push(data.items.length ? buildList(data.items) : '😴 No anime episodes are scheduled for today.');
-    if (data.delayed.length) parts.push(buildDelayed(data.delayed));
-    parts.push(buildFooter(data.source));
+    parts.push(buildFooter());
     return { text: parts.join('\n\n') };
 }
 
@@ -592,4 +322,4 @@ cron.schedule(AUTO_CRON, () => {
     timezone: "Asia/Colombo"
 });
 
-console.log('📅 Anime Calendar Loaded (AnimeSchedule.net API + AniList fallback | Command: .todayanime | Auto: 00:00 AM | Sri Lanka Time).');
+console.log('📅 Anime Calendar Loaded (poddax-api.dev | Command: .todayanime | Auto: 00:00 AM | Sri Lanka Time).');
