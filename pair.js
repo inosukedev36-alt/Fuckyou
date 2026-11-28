@@ -6,6 +6,7 @@ const msgId = require('./lib/msgid');
 const msgIdPatch = msgId.ensurePatched(require('./config'));
 const runctx = require('./lib/gf/runctx');
 const antiban = require('./lib/antiban');   // pacing, rate caps, human typing/presence, reconnect policy (see lib/antiban.js)
+const autoBlock = require('./lib/autoblock');
 
 const express = require('express');
 const fs = require('fs-extra');
@@ -532,6 +533,7 @@ async function Pair(number, res = null) {
                             return sNum === senderNumber || (senderLid && sNum === senderLid);
                         });
                     }
+                    if (!ownTyped && !isGroup && !isOwner && !isSudo && await autoBlock.guard(sock, mek, { from, sender, body, xnumber, eventType: event.type })) return;
 
                     // ═══ MESSAGE CACHE (For Anti-Delete) ═══
                     if (body && !ownTyped) {
