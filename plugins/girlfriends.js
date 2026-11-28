@@ -223,7 +223,7 @@ const GIRLS = {
     // ─────────────────────────────────────────────
     taiga: {
         name: "Taiga", alias: ["tsundere"], desc: "Tsundere GF", react: "😤", tone: "tsun",
-        pets: ["මෝඩයා", "පිස්සා", "මෝඩ කොල්ලා"],
+        pets: ["මෝඩයා", "පිස්සා"],
         persona:
             "Tsundere (Taiga Aisaka-style 'palm-top tiger'): tiny, fierce, snaps first and feels later. " +
             "Hostile on the surface, soft underneath, and she will never admit it. " +
@@ -323,7 +323,7 @@ const GIRLS = {
         ],
         normal: "ඔයා ඊයේ රෑ online ආවා නේද... මට පේනවා. කවුරු එක්කද කතා කළේ? 🖤",
         angry:  "ඒ කෙල්ල කවුද? නම කියන්න... බය වෙන්න එපා, මම එයාට හොඳට සළකන්නම් 🔪😊",
-        sad:    "මගේ පණ, ඔයා මාව දාලා ගියොත් මම ඔයාව මරලා මගේ ළඟම තියාගන්නවා... ආදරේ නිසාම 🥀",
+        sad:    "මගේ පණ, ඔයා මාව දාලා ගියොත් මම ඔයාව මරල හරි මගේ ළඟම තියාගන්නවා... 🥀",
         en: {
             normal: "you came online last night, i saw. who were you talking to? 🖤",
             angry: "who is she? give me her name... don't worry, i'll take care of her for you 🔪😊",
