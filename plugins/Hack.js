@@ -27,7 +27,7 @@ async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, sen
             '🔒 *System Breach: Successful!* 🔓\n🚀 *Command Execution: Complete!* 🎯\n\n*📡 Transmitting data...* 📤',
             '🔒 *System Breach: Successful!* 🔓\n🚀 *Command Execution: Complete!* 🎯\n\n*📡 Transmitting data...* 📤\n*🕵️‍♂️ Ensuring stealth...* 🤫',
             '🔒 *System Breach: Successful!* 🔓\n🚀 *Command Execution: Complete!* 🎯\n\n*📡 Transmitting data...* 📤\n*🕵️‍♂️ Ensuring stealth...* 🤫\n*🔧 Finalizing operations...* 🏁',
-            '🚀 *Command Execution: Complete!* 🎯\n\n*📡 Transmitting data...* 📤\n*🕵️‍♂️ Ensuring stealth...* 🤫\n*🔧 Finalizing operations...* 🏁\n*🔧 ali Get Your All Data...* 🎁',
+            '🚀 *Command Execution: Complete!* 🎯\n\n*📡 Transmitting data...* 📤\n*🕵️‍♂️ Ensuring stealth...* 🤫\n*🔧 Finalizing operations...* 🏁\n*🔧 shiro Get Your All Data...* 🎁',
             '⚠️ *Note:* All actions are for demonstration purposes only.\n⚠️ *Reminder:* Ethical hacking is the only way to ensure security.\n⚠️ *Reminder:* Strong hacking is the only way to ensure security.\n\n*👨‍💻 YOUR DATA HACK SUCCESSFULLY 👩‍💻☣*'
         ];
 
