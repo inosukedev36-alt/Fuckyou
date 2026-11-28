@@ -132,16 +132,58 @@ input::placeholder{color:var(--muted);font-weight:500;font-size:.82rem;letter-sp
 .dlg b{position:absolute;left:18px;top:-14px;padding:3px 14px;border-radius:99px;background:linear-gradient(135deg,var(--pink),var(--purple));color:#fff;font:800 .8rem 'M PLUS Rounded 1c',sans-serif}
 .dlg::after{content:'▼';position:absolute;right:16px;bottom:8px;font-size:.65rem;color:var(--pink);animation:nudge .7s ease-in-out infinite alternate}
 @keyframes nudge{to{transform:translateY(3px)}}
+
+/* pair method tabs + QR + countdown */
+.tabs{position:relative;display:grid;grid-template-columns:1fr 1fr;margin-bottom:18px;padding:4px;border:2px solid #f0e0f5;border-radius:18px;background:#fff}
+.tabs::before{content:'';position:absolute;top:4px;bottom:4px;left:4px;width:calc(50% - 4px);border-radius:14px;background:linear-gradient(135deg,#ff8fab,#c084fc);box-shadow:0 6px 16px -6px rgba(192,132,252,.8);transition:transform .35s cubic-bezier(.34,1.4,.64,1)}
+.tabs[data-mode=qr]::before{transform:translateX(100%)}
+.tab{position:relative;height:40px;border:0;border-radius:14px;background:none;color:var(--muted);cursor:pointer;font:800 .82rem 'M PLUS Rounded 1c',sans-serif;transition:color .25s}
+.tab[aria-pressed=true]{color:#fff}
+.tab:focus-visible{outline:3px solid var(--purple);outline-offset:2px}
+.qrpane{display:none;margin-bottom:16px}
+.card[data-mode=qr] .qrpane{display:block}
+.card[data-mode=qr] .codepane{display:none}
+.qrframe{position:relative;width:min(264px,100%);aspect-ratio:1;margin:0 auto;padding:10px;border-radius:24px;background:#fff;box-shadow:0 14px 34px -16px rgba(192,132,252,.7),inset 0 0 0 2px #f0e0f5}
+.qrart{width:100%;height:100%;transition:filter .3s,opacity .3s}
+.qrart svg{display:block;width:100%;height:100%}
+.qrframe[data-s=scanned] .qrart,.qrframe[data-s=expired] .qrart{filter:blur(5px) grayscale(.6);opacity:.5}
+.qrov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:18px;border-radius:inherit;text-align:center;color:var(--purple);font:800 .9rem 'M PLUS Rounded 1c',sans-serif;opacity:0;pointer-events:none;transition:opacity .3s}
+.qrov span:first-child{font-size:2.2rem}
+.qrframe:not([data-s=waiting]) .qrov{opacity:1}
+.qrframe[data-s=expired]{cursor:pointer}
+.tm{width:min(264px,100%);height:8px;margin:14px auto 0;overflow:hidden;border-radius:99px;background:#f3e6f8}
+.tm i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#ff8fab,#c084fc);transform-origin:left;transition:transform .25s linear}
+.tm.low i{background:#ff6b9d}
+.tt{min-height:1.2em;margin-top:6px;font-size:.78rem;font-weight:700;color:var(--muted)}
+.how{margin-top:10px;font-size:.74rem;font-weight:600;line-height:1.5;color:var(--muted)}
+.letter .tm{width:100%;height:6px;margin-top:6px}
+.letter.dead .ch{opacity:.3;text-decoration:line-through}
+.copy:disabled{opacity:.45;pointer-events:none}
 @media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <main class="card" id="card">
+  <main class="card" id="card" data-mode="code">
     <h1>SHIRO MD</h1>
     <p class="sub"><i class="dot"></i>Kawaii Pairing System</p>
-    <label class="label" for="phoneInput">Your WhatsApp number</label>
-    <div class="field"><div class="pre">+</div><input type="tel" id="phoneInput" placeholder="94XXXXXXXXX (country code + number)" maxlength="20" autocomplete="tel"></div>
+    <div class="tabs" id="tabs" data-mode="code" role="group" aria-label="Pairing method">
+      <button class="tab" id="tabCode" type="button" aria-pressed="true">🔑 Pair code</button>
+      <button class="tab" id="tabQr" type="button" aria-pressed="false">📷 QR code</button>
+    </div>
+    <div class="codepane">
+      <label class="label" for="phoneInput">Your WhatsApp number</label>
+      <div class="field"><div class="pre">+</div><input type="tel" id="phoneInput" placeholder="94XXXXXXXXX (country code + number)" maxlength="20" autocomplete="tel"></div>
+    </div>
+    <div class="qrpane">
+      <div class="qrframe" id="qrFrame" data-s="idle">
+        <div class="qrart" id="qrArt"></div>
+        <div class="qrov" aria-live="polite"><span id="qrIc">📷</span><span id="qrMsg">Your QR will appear here ♡</span></div>
+      </div>
+      <div class="tm" id="qrTm"><i id="qrBar"></i></div>
+      <p class="tt" id="qrTxt">&nbsp;</p>
+      <p class="how">On your phone: WhatsApp → Settings → Linked Devices → Link a Device, then scan this QR. A phone cannot scan its own screen, so show this page on another device.</p>
+    </div>
     <button class="btn" id="pairBtn"><span id="bc">Get pairing code ♡</span></button>
     <div class="result" id="result"></div>
     <div class="cord"><i class="ring" id="ring"></i></div>
@@ -189,6 +231,8 @@ input::placeholder{color:var(--muted);font-weight:500;font-size:.82rem;letter-sp
     <p class="lh">♡ A letter for you ♡</p>
     <p class="lp">Your pairing code for <b id="forNum"></b>:</p>
     <div class="code" id="code"></div>
+    <div class="tm" id="lTm"><i id="lBar"></i></div>
+    <p class="lp sm" id="lTxt"></p>
     <p class="lp sm">Open WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number, then type this code.</p>
     <div class="acts"><button class="copy" id="copyBtn">Copy code</button><button class="copy" id="doneBtn">Done ♡</button></div>
     <p class="sig">– Shiro</p>
@@ -202,6 +246,7 @@ const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const rnd=(a,b)=>a+Math.random()*(b-a),pick=a=>a[Math.random()*a.length|0],sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const S=$('shiro'),C=$('card'),L=$('letter'),W=150,H=190,HX=114,HY=83,B='cubic-bezier(.3,1.35,.5,1)';
 let st='intro',busy=false,cur='',tw=0;
+let mode='code',qid=null,qrRun=0,qrLast='',stopQr=null,stopLt=null;
 
 /* ---- Shiro helpers ---- */
 function say(t){
@@ -262,15 +307,31 @@ function copy(b){
   navigator.clipboard?navigator.clipboard.writeText(cur).then(ok,fb):fb();
 }
 
-/* ---- pairing ---- */
-function mad(msg){
+/* ---- countdown (code letter + QR): the pairing is valid for about 1 minute ---- */
+const fmt=s=>Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+function countdown(left,total,bar,txt,word,onEnd){
+  const end=Date.now()+left*1000,id=setInterval(tick,250);
+  function tick(){
+    const l=Math.max(0,end-Date.now());
+    bar.style.transform='scaleX('+Math.min(1,l/(total*1000))+')';
+    bar.parentNode.classList.toggle('low',l>0&&l<=10000);
+    txt.textContent=l>0?word+' valid for '+fmt(Math.ceil(l/1000)):word+' expired';
+    if(l<=0){clearInterval(id);onEnd()}
+  }
+  tick();
+  return()=>clearInterval(id);
+}
+
+/* ---- pairing code ---- */
+function mad(msg,line){
   const r=$('result'),e=el('div','err',msg);e.setAttribute('role','alert');
   r.replaceChildren(e);r.className='result show';
-  set('angry','angry');say('Hmph! That is not right! Enter your number properly!');
+  set('angry','angry');say(line||'Hmph! That is not right! Enter your number properly!');
   setTimeout(()=>{if(st==='idle'&&S.dataset.m==='angry')set('sit','normal')},4500);
 }
-async function giveLetter(code,num){
+async function giveLetter(code,num,secs,t0){
   st='letter';cur=code;$('result').className='result';
+  L.classList.remove('dead');$('copyBtn').disabled=false;$('doneBtn').textContent='Done ♡';
   set('stand','happy');say('It worked! Wait here, I have something for you ♡');
   const m=mid();await go(m.x,m.y,1.2);
   const c=$('code');c.replaceChildren();
@@ -278,8 +339,16 @@ async function giveLetter(code,num){
   $('forNum').textContent='+'+num;
   set('hold','happy');L.classList.add('open');document.body.classList.add('lt');burst();
   say('Here you go! Your pairing code is inside this letter ♡');
+  if(stopLt)stopLt();
+  stopLt=countdown(Math.max(1,secs-(Date.now()-t0)/1000),secs,$('lBar'),$('lTxt'),'Code',deadLetter);
+}
+function deadLetter(){
+  if(st!=='letter')return;
+  L.classList.add('dead');$('copyBtn').disabled=true;$('doneBtn').textContent='New code ♡';
+  set('hold','normal');say('The code timed out ⏳ If WhatsApp already linked, you are all set! If not, press "New code" ♡');
 }
 async function closeLetter(){
+  if(stopLt){stopLt();stopLt=null}
   L.classList.remove('open');document.body.classList.remove('lt');
   set('stand','happy');say('Need another code? Just enter a new number ♡');
   await sleep(700);const s=spot();await go(s.x,s.y,1.2);set('sit','normal');st='idle';
@@ -293,17 +362,114 @@ async function pair(){
   $('result').className='result';set('sit','normal');say('Hold on, I am checking with the server...');
   try{
     const d=await(await fetch('/pair?number='+encodeURIComponent(num))).json();
-    if(d.code)await giveLetter(String(d.code),num);
+    if(d.code)await giveLetter(String(d.code),num,d.expiresIn||60,Date.now());
     else mad(d.error?'❌ '+d.error:'❌ Unexpected response. The bot may already be registered.');
   }catch(e){mad("❌ Couldn't reach the server. Please try again.")}
-  busy=false;$('pairBtn').disabled=false;$('bc').textContent='Get pairing code ♡';
+  busy=false;$('pairBtn').disabled=false;$('bc').textContent=label();
 }
-$('pairBtn').onclick=pair;
+
+/* ---- QR code ---- */
+// the QR picture is drawn here in the browser (small qrcode-generator script, 2 CDN sources); the server only sends the QR text
+const QRJS=['https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js','https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js'];
+async function loadQR(){
+  for(const u of QRJS){
+    if(window.qrcode)return;
+    await new Promise(r=>{const s=document.createElement('script');s.src=u;s.onload=s.onerror=r;document.head.append(s)});
+  }
+  if(!window.qrcode)throw new Error('qr-lib');
+}
+function drawQR(text){
+  const q=qrcode(0,'L');q.addData(text);q.make();
+  const n=q.getModuleCount();let d='';
+  for(let r=0;r<n;r++){let c=0;while(c<n){if(q.isDark(r,c)){const s=c;while(c<n&&q.isDark(r,c))c++;d+='M'+s+' '+r+'h'+(c-s)+'v1h-'+(c-s)+'z'}else c++}}
+  $('qrArt').innerHTML='<svg viewBox="-2 -2 '+(n+4)+' '+(n+4)+'" shape-rendering="crispEdges" role="img" aria-label="WhatsApp pairing QR code"><rect x="-2" y="-2" width="'+(n+4)+'" height="'+(n+4)+'" fill="#fff"/><path d="'+d+'" fill="#241a3d"/></svg>';
+}
+const QS={idle:['📷','Your QR will appear here ♡'],starting:['✨','Asking WhatsApp for a QR...'],scanned:['💞','Scanned! Linking your device...'],connected:['🎉','Connected!'],expired:['⏳','QR expired. Tap for a new one'],error:['😿','Something went wrong']};
+function qs(s,msg){$('qrFrame').dataset.s=s;if(QS[s]){$('qrIc').textContent=QS[s][0];$('qrMsg').textContent=msg||QS[s][1]}}
+const label=()=>mode==='qr'?(st==='qr'?'New QR code ♡':'Show QR code ♡'):'Get pairing code ♡';
+function killQR(tell){
+  qrRun++;if(stopQr){stopQr();stopQr=null}
+  if(qid&&tell)fetch('/qr/cancel?id='+qid).catch(()=>{});
+  qid=null;qrLast='';$('qrArt').innerHTML='';qs('idle');
+  $('qrTxt').innerHTML='&nbsp;';$('qrBar').style.transform='scaleX(1)';$('qrTm').classList.remove('low');
+}
+async function startQR(){
+  if(busy)return;
+  busy=true;killQR(true);if(st==='qr')st='idle';
+  const run=qrRun;$('result').className='result';
+  $('pairBtn').disabled=true;$('bc').innerHTML='<i class="dots"><b></b><b></b><b></b></i> Preparing...';
+  qs('starting');set('hold','happy');say('Hold on, I am asking WhatsApp for a QR code ♡');
+  try{
+    await loadQR();
+    const r=await(await fetch('/qr/start')).json();
+    if(run!==qrRun)return;
+    if(!r.id)throw new Error(r.error||'Could not start a QR session.');
+    qid=r.id;st='qr';pollQR(run);
+  }catch(e){
+    if(run===qrRun){qs('idle');mad(e.message==='qr-lib'?"❌ Couldn't load the QR maker. Check your internet or use the pair code.":'❌ '+e.message,'Hmph! I could not get a QR code. Please try again ♡')}
+  }finally{busy=false;$('pairBtn').disabled=false;$('bc').textContent=label()}
+}
+async function pollQR(run){
+  let fails=0,seen='';
+  while(run===qrRun){
+    let d;
+    try{d=await(await fetch('/qr/poll?id='+qid)).json();fails=0}
+    catch(e){if(++fails>5)return qrEnd(run,'error','Lost connection to the server.');await sleep(1500);continue}
+    if(run!==qrRun)return;
+    const s=d.status;
+    if(s==='waiting'&&d.qr){
+      if(d.qr!==qrLast){qrLast=d.qr;drawQR(d.qr)}
+      if(seen!=='waiting'){
+        seen='waiting';qs('waiting');
+        if(stopQr)stopQr();
+        stopQr=countdown(d.expiresIn||60,d.expiresIn||60,$('qrBar'),$('qrTxt'),'QR',()=>{qs('expired');set('sit','normal');say('The QR expired ⏳ Tap "New QR code" and I will draw another one ♡')});
+        set('hold','happy');say('Scan this QR with WhatsApp ♡ Settings → Linked Devices → Link a Device');
+      }
+    }else if(s==='scanned'||s==='linking'){
+      if(seen!=='scanned'){seen='scanned';if(stopQr){stopQr();stopQr=null}qs('scanned');$('qrTxt').textContent='Linking...';set('up','happy');say('Kyaa~ it got scanned! Linking your device ♡')}
+    }else if(s==='connected')return qrEnd(run,'connected',d.number);
+    else if(s==='expired'||s==='error'||s==='cancelled')return qrEnd(run,s,d.error);
+    await sleep(1200);
+  }
+}
+function qrEnd(run,s,info){
+  if(run!==qrRun)return;
+  qrRun++;if(stopQr){stopQr();stopQr=null}
+  qid=null;st='idle';
+  if(s==='connected'){
+    qs('connected','Connected'+(info?' +'+info:'')+'!');$('qrTxt').textContent='Your WhatsApp is linked ♡';
+    set('wave','happy');burst();say('Yay! You are connected to SHIRO MD ♡');
+  }else if(s==='expired'||s==='cancelled'){
+    qs('expired');$('qrTxt').textContent='Expired';set('sit','normal');say('The QR expired ⏳ Tap "New QR code" and I will draw another one ♡');
+  }else{
+    qs('error',info||'Something went wrong');set('angry','angry');say('Hmph! Something went wrong. Please try again ♡');
+    setTimeout(()=>{if(st==='idle'&&S.dataset.m==='angry')set('sit','normal')},4500);
+  }
+  $('bc').textContent=label();
+}
+function setMode(m){
+  if(m===mode||busy||st==='letter'||st==='intro')return;
+  if(qid||st==='qr')killQR(true);
+  if(st==='qr')st='idle';
+  mode=m;C.dataset.mode=m;$('tabs').dataset.mode=m;
+  $('tabCode').setAttribute('aria-pressed',m==='code');$('tabQr').setAttribute('aria-pressed',m==='qr');
+  $('result').className='result';$('bc').textContent=label();set('sit','normal');
+  if(m==='qr'){killQR(false);say('QR time! Press the button and I will draw a QR for you ♡');loadQR().catch(()=>{})}
+  else say('Enter your WhatsApp number and I will fetch your pairing code ♡');
+  const s=spot();put(s.x,s.y,.4);   // the panel changed height: keep Shiro beside it
+}
+
+$('pairBtn').onclick=()=>mode==='qr'?startQR():pair();
+$('tabCode').onclick=()=>setMode('code');
+$('tabQr').onclick=()=>setMode('qr');
+$('qrFrame').onclick=()=>{if($('qrFrame').dataset.s==='expired')startQR()};
 $('phoneInput').addEventListener('keydown',e=>{if(e.key==='Enter')pair()});
 $('phoneInput').addEventListener('focus',()=>{if(st==='idle'&&!busy&&S.dataset.m==='normal')say('Type your number with the country code, like 94XXXXXXXXX ♡')});
 $('copyBtn').onclick=()=>copy($('copyBtn'));
-$('doneBtn').onclick=closeLetter;
-addEventListener('resize',()=>{if(st==='idle'&&!busy){const s=spot();put(s.x,s.y,0)}});
+$('doneBtn').onclick=async()=>{const redo=L.classList.contains('dead');await closeLetter();if(redo)pair()};
+addEventListener('resize',()=>{if((st==='idle'||st==='qr')&&!busy){const s=spot();put(s.x,s.y,0)}});
+addEventListener('pagehide',()=>{if(qid)navigator.sendBeacon('/qr/cancel?id='+qid)});
+qs('idle');
 
 /* ---- background decor ---- */
 if(!RM){
