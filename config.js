@@ -6,7 +6,7 @@ module.exports = {
 
     PREFIX: "/",
     EXTRA_PREFIXES: [],   // also accept these (so ".ytpl" and "/ytpl" both work). Set [] to disable.
-    MODE: "public", 
+    MODE: "private", 
 
     BOT_NAME: 'SHIRO MD',
     DESCRIPTION: 'Powered by SHIRO MD',
